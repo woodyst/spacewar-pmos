@@ -159,6 +159,7 @@ extienden. Ver [`NOTICE.md`](NOTICE.md).
 
 ## Documentación
 
+- [`docs/`](docs/) — notas por subsistema: qué fallaba, cómo se encontró y las trampas.
 - [`kernel/`](kernel/) — la serie de parches, un commit por arreglo, más la receta y la config.
 - [`packages/`](packages/) — los paquetes parcheados (calls, callaudiod, libcamera, hexagonrpcd,
   ModemManager, NetworkManager, phosh, stevia, flare, iio-sensor-proxy, mobile-broadband-provider-info).

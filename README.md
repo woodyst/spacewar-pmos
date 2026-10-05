@@ -154,6 +154,7 @@ files and scripts are published under the same terms as the projects they extend
 
 ## Documentation
 
+- [`docs/`](docs/) — per-subsystem notes: what was wrong, how it was found, and the traps.
 - [`kernel/`](kernel/) — the patch series, one commit per fix, plus the recipe and the config.
 - [`packages/`](packages/) — the patched packages (calls, callaudiod, libcamera, hexagonrpcd,
   ModemManager, NetworkManager, phosh, stevia, flare, iio-sensor-proxy, mobile-broadband-provider-info).
