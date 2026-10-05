@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 22:56:41 +0200
+Subject: [PATCH 26/27] ASoC: qdsp6: q6voice: take the voice calibration
+ directory from a parameter
+
+The calibration firmware directory was hardwired to the POCO X3 NFC one. Add a cal_dir module
+parameter (default unchanged) so another phone can load its own set, e.g. the Nothing Phone (1)
+with cal_dir=qcom/sm7325/nothing/spacewar/.
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 20 +++++++++++++-------
+ 1 file changed, 13 insertions(+), 7 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 5743acdeb..af17666cd 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -329,7 +329,15 @@ module_param(vendor_steps, uint, 0644);
+ MODULE_PARM_DESC(vendor_steps,
+ 		 "vendor vocproc setup: 1 channel info, 2 topology commit, 4 calibration, 8 media format");
+ 
+-/* Which calibration set: firmware qcom/sm7150/xiaomi/surya/voice-<cal_set>-*.bin */
++/*
++ * Where the calibration lives, relative to the firmware search path, and which set: the files are
++ * <cal_dir>voice-<cal_set>-*.bin. The default is the POCO X3 NFC one this was written for; other
++ * phones point it at their own directory (the Nothing Phone (1): qcom/sm7325/nothing/spacewar/).
++ */
++static char cal_dir[96] = "qcom/sm7150/xiaomi/surya/";
++module_param_string(cal_dir, cal_dir, sizeof(cal_dir), 0644);
++MODULE_PARM_DESC(cal_dir, "voice calibration firmware directory, with a trailing slash");
++
+ static char cal_set[32] = "handset";
+ module_param_string(cal_set, cal_set, sizeof(cal_set), 0644);
+ MODULE_PARM_DESC(cal_set, "voice calibration set (handset, speaker, handset-aec, speaker-aec)");
+@@ -347,7 +355,6 @@ static uint vendor_sample_rate = 48000;
+ module_param(vendor_sample_rate, uint, 0644);
+ MODULE_PARM_DESC(vendor_sample_rate, "sample rate sent with the endpoint media format");
+ 
+-#define Q6VOICE_CAL_DIR				"qcom/sm7150/xiaomi/surya/"
+ #define Q6VOICE_MAX_COL_INFO_SIZE		324
+ #define Q6VOICE_PCM_CHANNEL_FC			3
+ 
+@@ -514,8 +521,8 @@ static int q6voice_cal_load(struct q6voice_path *p)
+ 		struct q6voice_cal_blob *b = &cal->blob[i];
+ 		u32 *t = cal->table;
+ 
+-		snprintf(name, sizeof(name), Q6VOICE_CAL_DIR "voice-%.*s-%s.bin",
+-			 set_len, cal_set, q6voice_cal_part[i]);
++		snprintf(name, sizeof(name), "%svoice-%.*s-%s.bin",
++			 cal_dir, set_len, cal_set, q6voice_cal_part[i]);
+ 		ret = request_firmware(&fw, name, dev);
+ 		if (ret)
+ 			goto err;
+@@ -533,9 +540,8 @@ static int q6voice_cal_load(struct q6voice_path *p)
+ 		b->dsp = q6voice_dsp_addr(cal, b->dma);
+ 
+ 		if (i != Q6VOICE_CAL_DEVCFG) {
+-			snprintf(name, sizeof(name),
+-				 Q6VOICE_CAL_DIR "voice-%.*s-%s-col.bin",
+-				 set_len, cal_set, q6voice_cal_part[i]);
++			snprintf(name, sizeof(name), "%svoice-%.*s-%s-col.bin",
++				 cal_dir, set_len, cal_set, q6voice_cal_part[i]);
+ 			ret = request_firmware(&fw, name, dev);
+ 			if (ret)
+ 				goto err;
+-- 
+2.47.3
+

@@ -1,0 +1,52 @@
+From 8ac6fd4a4251585ca5747be7862465248ec52ca8 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 02:22:20 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: describe the
+ IMX766 focus actuator
+
+The factory camera module of the main camera names its focus actuator
+an AK7377. Describe it at 0x0c on the IMX766 CCI bus, powered by the
+wide camera VAF regulator with the camera I/O supply as pull-up, and
+link it to the sensor through lens-focus. There is no AK7377 support
+in the kernel; try it as an AK7375, the closest part of the family the
+ak7375 driver handles.
+---
+ .../boot/dts/qcom/sm7325-nothing-spacewar.dts      | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index 0d0117ce8..36678a3a3 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1010,7 +1010,17 @@ camu_gt24p128e: eeprom@51 {
+ };
+ 
+ &cci1_i2c1 {
+-	/* actuator (For Wide sensor) @ 0xc */
++	/*
++	 * AK7377 focus actuator of the IMX766 module (the factory camera module
++	 * names it abra_qtech_ak7377_actuator); driven as an AK7375.
++	 */
++	camw_ak7377: actuator@c {
++		compatible = "asahi-kasei,ak7375";
++		reg = <0x0c>;
++
++		vdd-supply = <&vreg_camw_vaf_1p8>;
++		vio-supply = <&vreg_cam_vio_1p8>;
++	};
+ 
+ 	camera@10 {
+ 		compatible = "sony,imx766";
+@@ -1034,6 +1044,8 @@ camera@10 {
+ 		orientation = <1>; // Rear facing
+ 		rotation = <90>;
+ 
++		lens-focus = <&camw_ak7377>;
++
+ 		port {
+ 			camera_imx766_ep: endpoint {
+ 				data-lanes = <1 2 3>;
+-- 
+2.47.3
+

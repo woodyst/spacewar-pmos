@@ -1,0 +1,357 @@
+diff --git a/src/cad-pulse.c b/src/cad-pulse.c
+index 6ea4ea6..fe5bb66 100644
+--- a/src/cad-pulse.c
++++ b/src/cad-pulse.c
+@@ -30,6 +30,18 @@
+ #define CARD_MODEM_CLASS "modem"
+ #define CARD_MODEM_NAME "Modem"
+ 
++/* A Bluetooth headset is its own card and its own sink. */
++#define BLUEZ_CARD_PREFIX "bluez_card."
++#define BLUEZ_SINK_PREFIX "bluez_output."
++/* What UCM calls the headset device inside the Voice Call verb. */
++#define VOICECALL_BT_DEVICE "Bluetooth"
++/*
++ * Hands-free, narrowband. This controller only advertises HV1/HV2/HV3, so
++ * with mSBC the headset's microphone arrives as exact silence.
++ */
++#define BLUEZ_HFP_PROFILE "headset-head-unit-cvsd"
++#define BLUEZ_HFP_PROFILE_FALLBACK "headset-head-unit"
++
+ struct _CadPulse
+ {
+     GObject parent_instance;
+@@ -44,6 +56,15 @@ struct _CadPulse
+     int source_id;
+ 
+     gboolean has_voice_profile;
++    /*
++     * Whether a headset is actually connected. The Voice Call (Bluetooth)
++     * profile is just a set of mixer routes, so UCM reports it as available
++     * even with nothing paired: without this it would be picked for calls
++     * that have nowhere to go, and the user would hear nothing.
++     */
++    gboolean has_bt_headset;
++    gchar *bt_card_name;
++    gchar *bt_sink_name;
+     gchar *speaker_port;
+     gchar *earpiece_port;
+ 
+@@ -302,6 +323,16 @@ static void process_new_sink(CadPulse *self, const pa_sink_info *info)
+     const gchar *prop;
+     guint i;
+ 
++    /* The headset's own sink, which is what the SCO link hangs off. */
++    if (g_str_has_prefix(info->name, BLUEZ_SINK_PREFIX)) {
++        if (g_strcmp0(self->bt_sink_name, info->name) != 0) {
++            g_free(self->bt_sink_name);
++            self->bt_sink_name = g_strdup(info->name);
++            g_debug("SINK: bluetooth '%s'", info->name);
++        }
++        return;
++    }
++
+     prop = pa_proplist_gets(info->proplist, PA_PROP_DEVICE_CLASS);
+     if (prop && g_strcmp0(prop, SINK_CLASS) != 0)
+         return;
+@@ -444,6 +475,10 @@ static void init_sink_info(pa_context *ctx, const pa_sink_info *info, int eol, v
+  * sound card
+  ******************************************************************************/
+ 
++/* Declared here, defined next to the rest of the SCO handling below. */
++static void watch_profile_cb(pa_context *ctx, const pa_card_info *info,
++                             int eol, void *data);
++
+ static void init_card_info(pa_context *ctx, const pa_card_info *info, int eol, void *data)
+ {
+     CadPulse *self = data;
+@@ -465,6 +500,19 @@ static void init_card_info(pa_context *ctx, const pa_card_info *info, int eol, v
+         return;
+     }
+ 
++    /*
++     * A headset is a card of its own. Note it before the checks below skip
++     * it: calls are not routed through it, but its presence is what makes
++     * the Bluetooth voice profile usable at all.
++     */
++    if (g_str_has_prefix(info->name, BLUEZ_CARD_PREFIX)) {
++        g_debug("CARD: bluetooth headset '%s'", info->name);
++        self->has_bt_headset = TRUE;
++        g_free(self->bt_card_name);
++        self->bt_card_name = g_strdup(info->name);
++        return;
++    }
++
+     prop = pa_proplist_gets(info->proplist, "alsa.card_name");
+     g_debug("CARD: prop %s = %s", "alsa.card_name", prop);
+     if (prop && g_str_has_prefix(prop, CARD_MODEM_NAME))
+@@ -591,6 +639,9 @@ static gboolean init_pulseaudio_objects(gpointer data)
+     self->card_id = self->sink_id = self->source_id = -1;
+     self->sink_ports = self->source_ports = NULL;
+ 
++    /* Re-derived from the card list below: a headset may have gone away. */
++    self->has_bt_headset = FALSE;
++
+     op = pa_context_get_card_info_list(self->ctx, init_card_info, self);
+     if (op)
+         pa_operation_unref(op);
+@@ -641,8 +692,22 @@ static void changed_cb(pa_context *ctx, pa_subscription_event_type_t type, uint3
+         if (self->card_id < 0 && kind == PA_SUBSCRIPTION_EVENT_NEW) {
+             g_debug("card %u added, but no valid card detected yet, retrying...", idx);
+             g_idle_add(init_pulseaudio_objects, self);
++        } else if (idx != (uint32_t)self->card_id &&
++                   (kind == PA_SUBSCRIPTION_EVENT_NEW ||
++                    kind == PA_SUBSCRIPTION_EVENT_REMOVE)) {
++            /*
++             * Some other card came or went - a headset, most likely. Rescan,
++             * so that has_bt_headset follows reality.
++             */
++            g_debug("card %u appeared/disappeared, rescanning", idx);
++            g_idle_add(init_pulseaudio_objects, self);
+         } else if (idx == self->card_id && kind == PA_SUBSCRIPTION_EVENT_CHANGE) {
+             g_debug("card %u changed", idx);
++
++            op = pa_context_get_card_info_by_index(ctx, idx, watch_profile_cb, self);
++            if (op)
++                pa_operation_unref(op);
++
+             if (self->sink_id != -1) {
+                 op = pa_context_get_sink_info_by_index(ctx, self->sink_id,
+                                                        change_sink_info, self);
+@@ -853,6 +918,54 @@ static void operation_complete_cb(pa_context *ctx, int success, void *data)
+     }
+ }
+ 
++/*
++ * The SCO link is NOT taken here.
++ *
++ * The chip only routes call audio onto its bus while a SCO link exists, and
++ * the link has to be up *before* the routing is applied: the DSP opens its
++ * side when the mixer controls land, and if the chip's SCO ports are still
++ * asleep at that moment nothing moves afterwards. Measured: with the link
++ * taken first the far end hears the headset perfectly; taken at the same
++ * time as the routing, both directions stay silent with every log looking
++ * correct.
++ *
++ * callaudiod only ever hears about the speaker button, which is far too
++ * late. So a small service watching ModemManager takes the link as soon as a
++ * call starts (scripts/llamada-al-bluetooth.sh), and by the time wireplumber
++ * picks the Voice Call profile the link is already up.
++ */
++
++/*
++ * Whether this profile is the headset one, and whether it may be used.
++ */
++static gboolean profile_is_bt(const char *name)
++{
++    return g_strrstr(name, VOICECALL_BT_DEVICE) != NULL;
++}
++
++/*
++ * Take or release the SCO link according to where the call is actually
++ * routed, whoever moved it.
++ *
++ * The profile at the start of a call is not chosen here: wireplumber's
++ * find-voice-call-profile.lua does it, and callaudiod only hears about the
++ * speaker button. So instead of acting on our own decisions, watch the card's
++ * active profile and follow it.
++ */
++static void watch_profile_cb(pa_context *ctx, const pa_card_info *info,
++                             int eol, void *data)
++{
++    CadPulse *self = data;
++
++    if (eol != 0 || !info || info->index != (uint32_t)self->card_id)
++        return;
++    if (!info->active_profile2)
++        return;
++
++    if (profile_is_bt(info->active_profile2->name))
++        g_debug("the call is on the headset");
++}
++
+ static void set_card_profile(pa_context *ctx, const pa_card_info *info, int eol, void *data)
+ {
+     CadPulseOperation *operation = data;
+@@ -888,9 +1001,25 @@ static void set_card_profile(pa_context *ctx, const pa_card_info *info, int eol,
+         for (int i = 0; i < info->n_profiles; i++) {
+             profile = info->profiles2[i];
+ 
+-            if (profile->available &&
+-                g_str_has_prefix(profile->name, target_verb) &&
+-                profile->priority > target_priority) {
++            if (!profile->available ||
++                !g_str_has_prefix(profile->name, target_verb))
++                continue;
++
++            /*
++             * The headset profile is deliberately the lowest-priority one in
++             * UCM, so that nothing picks it by priority alone - UCM has no
++             * idea whether a headset is connected and would otherwise send
++             * every call to one that may not be there. Here we do know, so
++             * when there is a headset it wins outright.
++             */
++            if (profile_is_bt(profile->name)) {
++                if (!operation->pulse->has_bt_headset)
++                    continue;
++                target_profile = profile->name;
++                break;
++            }
++
++            if (profile->priority > target_priority) {
+                 target_profile = profile->name;
+                 target_priority = profile->priority;
+             }
+@@ -954,9 +1083,10 @@ static void set_output_port(pa_context *ctx, const pa_sink_info *info, int eol,
+             target_port = get_available_sink_port(info, operation->pulse->speaker_port);
+     }
+ 
+-    g_debug("active port is '%s', target port is '%s'", info->active_port->name, target_port);
++    g_debug("active port is '%s', target port is '%s'",
++           info->active_port ? info->active_port->name : "(none)", target_port);
+ 
+-    if (target_port && g_strcmp0(info->active_port->name, target_port) != 0) {
++    if (target_port && (!info->active_port || g_strcmp0(info->active_port->name, target_port) != 0)) {
+         g_debug("switching to target port '%s'", target_port);
+         op = pa_context_set_sink_port_by_index(ctx, operation->pulse->sink_id,
+                                                target_port,
+@@ -971,6 +1101,101 @@ static void set_output_port(pa_context *ctx, const pa_sink_info *info, int eol,
+     }
+ }
+ 
++/*
++ * Pick the Speaker/Earpiece variant of the currently active Voice Call
++ * profile and switch to it. Cards with a dedicated voice profile (e.g.
++ * surya) route Speaker/Earpiece as separate card profiles with no sinks of
++ * their own rather than as ports on a shared sink, so set_output_port()
++ * (which needs a sink) cannot be used for them - see cad_pulse_enable_speaker().
++ */
++static void set_voicecall_profile_for_speaker(pa_context *ctx, const pa_card_info *info, int eol, void *data)
++{
++    CadPulseOperation *operation = data;
++    pa_card_profile_info2 *profile;
++    pa_operation *op = NULL;
++    const char *target_profile = NULL;
++    uint32_t target_priority = 0;
++
++    if (eol != 0)
++        return;
++
++    if (!info) {
++        g_critical("PA returned no card info (eol=%d)", eol);
++        return;
++    }
++
++    if (info->index != operation->pulse->card_id)
++        return;
++
++    for (int i = 0; i < info->n_profiles; i++) {
++        profile = info->profiles2[i];
++
++        if (!profile->available || !g_str_has_prefix(profile->name, SND_USE_CASE_VERB_VOICECALL))
++            continue;
++
++        /*
++         * When enabling the speaker, only the speaker variant will do. When
++         * disabling it, take the highest-priority non-speaker variant (the
++         * earpiece, or headphones/handsfree if the card ever exposes one as
++         * a higher-priority voice profile) - same intent as
++         * get_available_sink_port()'s port-based equivalent.
++         */
++        if (operation->value) {
++            if (!g_strrstr(profile->name, "Speaker"))
++                continue;
++        } else if (g_strrstr(profile->name, "Speaker")) {
++            continue;
++        }
++
++        /*
++         * Turning the speaker off goes back to the headset when there is
++         * one, and to the earpiece otherwise. Same reason as in
++         * set_card_profile(): the headset profile carries the lowest
++         * priority precisely so that only code that knows about the headset
++         * ever selects it.
++         */
++        if (profile_is_bt(profile->name)) {
++            if (operation->pulse->has_bt_headset) {
++                target_profile = profile->name;
++                break;
++            }
++            continue;
++        }
++
++        if (profile->priority > target_priority) {
++            target_profile = profile->name;
++            target_priority = profile->priority;
++        }
++    }
++
++
++
++    if (target_profile) {
++        if (g_strcmp0(info->active_profile2->name, target_profile) != 0) {
++            g_debug("switching to voice call profile '%s'", target_profile);
++            op = pa_context_set_card_profile_by_index(ctx, operation->pulse->card_id,
++                                                      target_profile,
++                                                      operation_complete_cb, operation);
++        }
++    } else if (operation->pulse->sink_id >= 0) {
++        /*
++         * The card has a voice profile, but not one per output: it keeps the
++         * speaker and the earpiece as ports of a single sink. Switch the port
++         * instead, which is what such a card expects.
++         */
++        g_debug("no per-output voice call profile, switching port instead");
++        op = pa_context_get_sink_info_by_index(ctx, operation->pulse->sink_id,
++                                               set_output_port, operation);
++    }
++
++    if (op) {
++        pa_operation_unref(op);
++    } else {
++        g_debug("%s: nothing to be done", __func__);
++        operation_complete_cb(ctx, 1, operation);
++    }
++}
++
+ /**
+  * cad_pulse_select_mode:
+  * @mode:
+@@ -1068,18 +1293,29 @@ void cad_pulse_enable_speaker(gboolean enable, CadOperation *cad_op)
+     g_assert(cad_op->type == CAD_OPERATION_ENABLE_SPEAKER);
+ 
+     operation->pulse = cad_pulse_get_default();
++    operation->op = cad_op;
++    operation->value = (guint)enable;
+ 
+-    if (operation->pulse->sink_id < 0) {
++    if (operation->pulse->has_voice_profile) {
++        /*
++         * A card with a dedicated voice profile may express the speaker and
++         * the earpiece as separate profiles of the voice verb rather than as
++         * ports of one sink - surya does, so that each output can carry its
++         * own volume control. Look for such a profile first;
++         * set_voicecall_profile_for_speaker() falls back to switching the
++         * port if the card turns out not to have one.
++         */
++        op = pa_context_get_card_info_by_index(operation->pulse->ctx,
++                                               operation->pulse->card_id,
++                                               set_voicecall_profile_for_speaker, operation);
++    } else if (operation->pulse->sink_id >= 0) {
++        op = pa_context_get_sink_info_by_index(operation->pulse->ctx,
++                                               operation->pulse->sink_id,
++                                               set_output_port, operation);
++    } else {
+         g_warning("card has no usable sink");
+         goto error;
+     }
+-
+-    operation->op = cad_op;
+-    operation->value = (guint)enable;
+-
+-    op = pa_context_get_sink_info_by_index(operation->pulse->ctx,
+-                                           operation->pulse->sink_id,
+-                                           set_output_port, operation);
+     if (op)
+         pa_operation_unref(op);
+ 

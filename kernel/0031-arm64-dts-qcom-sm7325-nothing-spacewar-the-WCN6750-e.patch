@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 17:16:54 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: the WCN6750
+ enumerates as product 0x222
+
+The stock device tree describes the chip at elemental address
+[00 01 21 02 17 02], but the stock btfm SLIMbus driver never uses that
+product code as is: it reads the chip version and overwrites it, 0x20 for
+Hastings 2.0, 0x21 for Hastings Prime and 0x22 for Moselle ((version |
+0x10) == 0x40140110). The WCN6750 here reports SoC version 0x40140110, so it
+enumerates as 0x222. Asked for 0x221, the SLIMbus manager answers -ENXIO for
+as long as one keeps asking, with the bus awake and the chip busy.
+
+Describe both halves as slim217,222 and match that product in wcn-bt-slim.
+---
+ arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts | 9 ++++++---
+ sound/soc/codecs/wcn-bt-slim.c                       | 4 ++--
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index 85e25ad1d..d5edc3c20 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1900,7 +1900,10 @@ &uart5 {
+ 
+ /*
+  * SLIMbus to the WCN6750 audio side, for Bluetooth call audio. Stock: slim@3ac0000 (cell-index 1),
+- * chip at elemental address [00 01 21 02 17 02] and its interface device at [00 00 21 02 17 02].
++ * chip described at elemental address [00 01 21 02 17 02] and its interface device at
++ * [00 00 21 02 17 02], but the stock btfm driver overwrites the product code from the chip version:
++ * for Moselle (WCN6750, SoC version 0x40140110) it enumerates as product 0x222, which is what the
++ * chip really reports on the bus (0x221 is never answered).
+  * NGD reg 1 makes the ADSP attach it to instance 0 (id >> 1), as cell-index 1 does downstream.
+  */
+ &slimbam {
+@@ -1917,12 +1920,12 @@ slim@1 {
+ 
+ 		/* Both halves are needed: the interface device carries register access, the ported one owns the audio ports. */
+ 		bt_ifd: bt-ifd@0,0 {
+-			compatible = "slim217,221";
++			compatible = "slim217,222";
+ 			reg = <0 0>;
+ 		};
+ 
+ 		bt_audio: bt-audio@1,0 {
+-			compatible = "slim217,221";
++			compatible = "slim217,222";
+ 			reg = <1 0>;
+ 			/* Two DAIs: SCO downlink and SCO uplink. */
+ 			#sound-dai-cells = <1>;
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index 1e0dd4ebc..be0fec7b1 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -1452,8 +1452,8 @@ static void wcn_bt_slim_debugfs_init(void)
+ static const struct slim_device_id wcn_bt_slim_id[] = {
+ 	{ 0x217, 0x220, 0x0, 0x0 },	/* interface device */
+ 	{ 0x217, 0x220, 0x1, 0x0 },	/* ported generic device */
+-	{ 0x217, 0x221, 0x0, 0x0 },	/* WCN6750 interface device */
+-	{ 0x217, 0x221, 0x1, 0x0 },	/* WCN6750 ported generic device */
++	{ 0x217, 0x222, 0x0, 0x0 },	/* WCN6750 (Moselle) interface device */
++	{ 0x217, 0x222, 0x1, 0x0 },	/* WCN6750 (Moselle) ported generic device */
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(slim, wcn_bt_slim_id);
+-- 
+2.47.3
+

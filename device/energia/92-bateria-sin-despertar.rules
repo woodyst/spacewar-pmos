@@ -1,0 +1,30 @@
+# /etc/udev/rules.d/92-bateria-sin-despertar.rules — spacewar (2026-09-16)
+#
+# Verificado en el móvil (16-09): /sys/class/power_supply/qcom-battmgr-bat/power/wakeup existe y queda en
+# `disabled`. A `qcom-battmgr-usb` y `qcom-battmgr-wls` NO se les toca, para que enchufar el cargador siga
+# despertando al móvil.
+#
+# Quita a la batería la capacidad de DESPERTAR al móvil dormido. El aviso sigue llegando: lo que se le quita es
+# poder sacar al SoC de la suspensión.
+#
+# Por qué: en la medida de noche del 16-09 (00:02 → 11:24, 11,4 h) hubo 31 despertares y **21 fueron avisos de
+# batería del ADSP** (`NOTIF_BAT_STATUS`, 0x80), uno por cada 1 % de capacidad. Es la primera causa de despertares
+# con diferencia. El sueño en sí cuesta 43-57 mA, pero cada despertar dura 36-39 s y dispara la media del tramo
+# (un tramo con 8 despertares dio 128 mA frente a 40-50 mA durmiendo de un tirón).
+#
+# Silenciarlos en origen ya se intentó y NO funciona: el parche 0049 (kernel r133) expone la petición
+# BATTMGR_REQUEST_NOTIFICATION en /sys/module/qcom_battmgr/parameters/, y el firmware del SM7325 **ignora los
+# campos** (prueba del 15-09: con la petición a cero seguía avisando ~1 vez por cada 1 %). De ahí este otro ángulo:
+# dejar que avise y quitarle el despertar, como ya se hizo con el UART del Bluetooth en
+# 91-bt-uart-sin-despertar.rules.
+#
+# ⚠️ COSTE: mientras duerme, el sistema no se entera de los cambios de nivel de batería. El apagado por batería
+#    crítica lo hace el firmware por su cuenta (no depende de que el kernel esté despierto), pero una alerta de
+#    batería baja puede no aparecer hasta el siguiente despertar por otra causa. A valorar tras medir la ganancia.
+#
+# Revertir en caliente:
+#     echo enabled > /sys/class/power_supply/qcom-battmgr-bat/power/wakeup
+#
+# Dos líneas por el mismo motivo que en la regla del UART: en `add` el atributo puede no existir todavía.
+ACTION=="bind", SUBSYSTEM=="power_supply", KERNEL=="qcom-battmgr-bat", ATTR{power/wakeup}="disabled"
+ACTION=="add",  SUBSYSTEM=="power_supply", KERNEL=="qcom-battmgr-bat", ATTR{power/wakeup}="disabled"

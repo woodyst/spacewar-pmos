@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 19:47:07 +0200
+Subject: [PATCH] ASoC: codecs: tfa9872: add an output switch to power down one
+ amplifier
+
+Nothing Phone (1) has two TFA9873 on the primary MI2S line, the top one as earpiece and the
+bottom one as loudspeaker. Both always play, so a call on the earpiece also comes out of the
+loudspeaker. Add a virtual DAPM switch between the power-up driver and the output: when it is
+off, DAPM powers the amplifier down (PWDN). It defaults to on, so normal playback is unchanged.
+With sound-name-prefix the controls are "Earpiece Output Switch" and "Speaker Output Switch".
+---
+ sound/soc/codecs/tfa9872.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/tfa9872.c b/sound/soc/codecs/tfa9872.c
+index 186c3d02a..d20218243 100644
+--- a/sound/soc/codecs/tfa9872.c
++++ b/sound/soc/codecs/tfa9872.c
+@@ -99,14 +99,23 @@ static int tfa987x_digital_mute(struct snd_soc_dai *codec_dai, int mute, int str
+ 	return 0;
+ }
+ 
++/*
++ * Phones with two amplifiers on one I2S line (earpiece + loudspeaker) need to silence one of them,
++ * e.g. for a call on the earpiece. Virtual switch, on by default so plain playback keeps both.
++ */
++static const struct snd_kcontrol_new tfa987x_output_switch =
++	SOC_DAPM_SINGLE("Switch", SND_SOC_NOPM, 0, 1, 1);
++
+ static const struct snd_soc_dapm_widget tfa987x_dapm_widgets[] = {
+ 	SND_SOC_DAPM_OUTPUT("Speaker"),
+ 	SND_SOC_DAPM_OUT_DRV_E("PWUP", TFA987X_SYS_CTRL0, 0, 1, NULL, 0, NULL, 0),
++	SND_SOC_DAPM_SWITCH("Output", SND_SOC_NOPM, 0, 0, &tfa987x_output_switch),
+ };
+ 
+ static const struct snd_soc_dapm_route tfa987x_dapm_routes[] = {
+ 	{"PWUP", NULL, "HiFi Playback"},
+-	{"Speaker", NULL, "PWUP"},
++	{"Output", "Switch", "PWUP"},
++	{"Speaker", NULL, "Output"},
+ };
+ 
+ static const struct snd_soc_component_driver tfa987x_component = {
+-- 
+2.47.3
+

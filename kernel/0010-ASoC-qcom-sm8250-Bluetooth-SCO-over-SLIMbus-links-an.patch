@@ -1,0 +1,512 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 19:16:03 +0200
+Subject: [PATCH 10/13] ASoC: qcom: sm8250: Bluetooth SCO over SLIMbus links
+ and voice support from surya (r93)
+
+Consolidated from the surya (sm7150) series v7.1_rc3..4c005af83 (patch -F3).
+---
+ sound/soc/qcom/common.c |  12 ++
+ sound/soc/qcom/common.h |   2 +-
+ sound/soc/qcom/sm8250.c | 354 +++++++++++++++++++++++++++++++++++++++-
+ 3 files changed, 359 insertions(+), 9 deletions(-)
+
+diff --git a/sound/soc/qcom/common.c b/sound/soc/qcom/common.c
+index edc461169..2399026d8 100644
+--- a/sound/soc/qcom/common.c
++++ b/sound/soc/qcom/common.c
+@@ -146,6 +146,18 @@ int qcom_snd_parse_of(struct snd_soc_card *card)
+ 				link->no_pcm = 1;
+ 				link->ignore_pmdown_time = 1;
+ 			}
++		} else if (of_property_read_bool(np, "qcom,dpcm-backend")) {
++			/*
++			 * A backend with nothing on the far side. The DSP's
++			 * voice record and playback ports are like this: they
++			 * exist inside the DSP, so there is no codec to name,
++			 * but they still have to be backends or no frontend
++			 * can be routed to them.
++			 */
++			link->codecs	 = &snd_soc_dummy_dlc;
++			link->num_codecs = 1;
++			link->no_pcm = 1;
++			link->ignore_pmdown_time = 1;
+ 		} else {
+ 			/* DPCM frontend */
+ 			link->codecs	 = &snd_soc_dummy_dlc;
+diff --git a/sound/soc/qcom/common.h b/sound/soc/qcom/common.h
+index ee6662885..7c4086bb4 100644
+--- a/sound/soc/qcom/common.h
++++ b/sound/soc/qcom/common.h
+@@ -7,7 +7,7 @@
+ #include <dt-bindings/sound/qcom,q6afe.h>
+ #include <sound/soc.h>
+ 
+-#define LPASS_MAX_PORT			(SENARY_MI2S_TX + 1)
++#define LPASS_MAX_PORT			(VOICE_PLAYBACK_TX + 1)
+ 
+ int qcom_snd_parse_of(struct snd_soc_card *card);
+ int qcom_snd_wcd_jack_setup(struct snd_soc_pcm_runtime *rtd,
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index b7d484900..cd3b9ae47 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -3,7 +3,9 @@
+ 
+ #include <dt-bindings/sound/qcom,q6afe.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/workqueue.h>
+ #include <sound/soc.h>
+ #include <sound/soc-dapm.h>
+ #include <sound/pcm.h>
+@@ -55,6 +57,14 @@ static void sm8250_snd_exit(struct snd_soc_pcm_runtime *rtd)
+ 
+ }
+ 
++/*
++ * Rate of the Bluetooth SCO link: 8000 for CVSD, 16000 for mSBC. A parameter
++ * because nothing tells the machine driver which codec the link negotiated.
++ */
++static uint bt_sco_rate = 8000;
++module_param(bt_sco_rate, uint, 0644);
++MODULE_PARM_DESC(bt_sco_rate, "sample rate of the Bluetooth SCO link (8000 CVSD, 16000 mSBC)");
++
+ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 				     struct snd_pcm_hw_params *params)
+ {
+@@ -64,6 +74,21 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 					SNDRV_PCM_HW_PARAM_CHANNELS);
+ 	struct snd_mask *fmt = hw_param_mask(params, SNDRV_PCM_HW_PARAM_FORMAT);
+ 
++	/*
++	 * The Bluetooth SCO link is not 48 kHz stereo like everything else:
++	 * it carries one channel at the rate of its air codec - 8 kHz for
++	 * CVSD, 16 kHz for the wideband one. Forcing the usual figures here
++	 * feeds the chip six times the samples it reads, and the headset gets
++	 * an audio that drifts in and out of sense.
++	 */
++	if (rtd->dai_link->id == SLIMBUS_7_RX ||
++	    rtd->dai_link->id == SLIMBUS_7_TX) {
++		rate->min = rate->max = bt_sco_rate;
++		channels->min = channels->max = 1;
++		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
++		return 0;
++	}
++
+ 	rate->min = rate->max = 48000;
+ 	channels->min = channels->max = 2;
+ 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+@@ -71,13 +96,27 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 	return 0;
+ }
+ 
++/*
++ * A BE link can have more than one codec DAI (e.g. two amplifiers sharing
++ * one MI2S bus for a stereo pair, each with its own DAI) - set_fmt() must be
++ * called on every one of them, not just the first, or codecs past index 0
++ * are left running with whatever DAI format they reset-defaulted to.
++ */
++static void mi2s_set_codec_dai_fmt(struct snd_soc_pcm_runtime *rtd, unsigned int codec_dai_fmt)
++{
++	struct snd_soc_dai *codec_dai;
++	int i;
++
++	for_each_rtd_codec_dais(rtd, i, codec_dai)
++		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++}
++
+ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ {
+ 	unsigned int fmt = SND_SOC_DAIFMT_BP_FP;
+ 	unsigned int codec_dai_fmt = SND_SOC_DAIFMT_BC_FC;
+ 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+ 	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
+-	struct snd_soc_dai *codec_dai = snd_soc_rtd_to_codec(rtd, 0);
+ 
+ 	switch (cpu_dai->id) {
+ 	case PRIMARY_MI2S_RX:
+@@ -86,7 +125,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_PRI_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case SECONDARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -94,7 +133,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_SEC_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case TERTIARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -102,7 +141,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case QUINARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -110,7 +149,7 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_QUI_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	case SENARY_MI2S_RX:
+ 		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
+@@ -118,7 +157,21 @@ static int sm8250_snd_startup(struct snd_pcm_substream *substream)
+ 			Q6AFE_LPASS_CLK_ID_SEN_MI2S_IBIT,
+ 			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_PLAYBACK);
+ 		snd_soc_dai_set_fmt(cpu_dai, fmt);
+-		snd_soc_dai_set_fmt(codec_dai, codec_dai_fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
++		break;
++	case TERTIARY_MI2S_TX:
++		/*
++		 * The capture direction of the same physical bus (the amps'
++		 * I/V sense feedback on SD1). It shares the tertiary MI2S bit
++		 * clock with the RX port, and the SoC still provides it - the
++		 * amps are clock consumers in both directions.
++		 */
++		codec_dai_fmt |= SND_SOC_DAIFMT_NB_NF | SND_SOC_DAIFMT_I2S;
++		snd_soc_dai_set_sysclk(cpu_dai,
++			Q6AFE_LPASS_CLK_ID_TER_MI2S_IBIT,
++			MI2S_BCLK_RATE, SNDRV_PCM_STREAM_CAPTURE);
++		snd_soc_dai_set_fmt(cpu_dai, fmt);
++		mi2s_set_codec_dai_fmt(rtd, codec_dai_fmt);
+ 		break;
+ 	default:
+ 		break;
+@@ -145,6 +198,53 @@ static int sm8250_snd_hw_free(struct snd_pcm_substream *substream)
+ 	return qcom_snd_sdw_hw_free(substream, &data->stream_prepared[cpu_dai->id]);
+ }
+ 
++/*
++ * SLIMBus backends need the bus channel numbers handed to the DSP before its
++ * port will start - without them the ADSP refuses the port outright. The
++ * codec is the one that knows which channels it listens on, so ask it and
++ * pass the answer along.
++ */
++/* Same bounds the other Qualcomm machine drivers use for these arrays. */
++#define SLIM_MAX_TX_PORTS	16
++#define SLIM_MAX_RX_PORTS	13
++
++static int sm8250_slim_hw_params(struct snd_pcm_substream *substream,
++				 struct snd_pcm_hw_params *params)
++{
++	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
++	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(rtd, 0);
++	struct snd_soc_dai *codec_dai;
++	u32 rx_ch[SLIM_MAX_RX_PORTS], tx_ch[SLIM_MAX_TX_PORTS];
++	u32 rx_ch_cnt = 0, tx_ch_cnt = 0;
++	int ret, i;
++
++	for_each_rtd_codec_dais(rtd, i, codec_dai) {
++		ret = snd_soc_dai_get_channel_map(codec_dai, &tx_ch_cnt, tx_ch,
++						  &rx_ch_cnt, rx_ch);
++		if (ret == -ENOTSUPP)
++			continue;
++		if (ret)
++			return ret;
++
++		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
++			ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
++							  rx_ch_cnt, rx_ch);
++		else
++			ret = snd_soc_dai_set_channel_map(cpu_dai, tx_ch_cnt,
++							  tx_ch, 0, NULL);
++		if (ret && ret != -ENOTSUPP) {
++			dev_err(rtd->dev, "cannot set cpu chan map: %d\n", ret);
++			return ret;
++		}
++	}
++
++	return 0;
++}
++
++static const struct snd_soc_ops sm8250_slim_be_ops = {
++	.hw_params = sm8250_slim_hw_params,
++};
++
+ static const struct snd_soc_ops sm8250_be_ops = {
+ 	.startup = sm8250_snd_startup,
+ 	.shutdown = qcom_snd_sdw_shutdown,
+@@ -162,11 +262,219 @@ static void sm8250_add_be_ops(struct snd_soc_card *card)
+ 			link->init = sm8250_snd_init;
+ 			link->exit = sm8250_snd_exit;
+ 			link->be_hw_params_fixup = sm8250_be_hw_params_fixup;
+-			link->ops = &sm8250_be_ops;
++			/*
++			 * The SoundWire ops would try to prepare a stream that
++			 * a SLIMBus link does not have; it needs the channel
++			 * map instead.
++			 */
++			if (link->id == SLIMBUS_7_RX || link->id == SLIMBUS_7_TX)
++				link->ops = &sm8250_slim_be_ops;
++			else
++				link->ops = &sm8250_be_ops;
+ 		}
+ 	}
+ }
+ 
++/*
++ * How long to wait for the Bluetooth codec (SLIMBUS_7's bt_audio, on surya)
++ * before giving up and registering the card without it.
++ *
++ * qcom_snd_parse_of() resolves every "sound-dai" phandle against ASoC's own
++ * live component list and returns -EPROBE_DEFER the moment any one of them
++ * isn't registered yet - ordinarily fine, the driver core retries once that
++ * component's driver binds. But wcn-bt-slim is inserted by hand, late, after
++ * userspace decides the SLIMBus chain is up, and the chip has a documented
++ * failure mode where it stops enumerating for good (sometimes surviving a
++ * reboot). When that happens nothing ever binds bt_audio's device, no
++ * deferred-probe retry is ever triggered for us again, and "sound" stays
++ * deferred forever - no card, no audio of ANY kind, including speakers and
++ * ordinary calls, which have nothing to do with Bluetooth.
++ *
++ * bt_deadline_ms bounds that wait. Past it, the SLIMBUS_7 dai_link DT nodes
++ * are disabled in the live tree and the card is registered without them -
++ * exactly the verdict qcom_snd_parse_of() would have reached on its own, just
++ * no longer allowed to block everything else indefinitely. Getting Bluetooth
++ * call audio back after that needs a reboot; every other path is unaffected.
++ */
++static uint bt_deadline_ms = 90000;
++module_param(bt_deadline_ms, uint, 0644);
++MODULE_PARM_DESC(bt_deadline_ms,
++		 "give up waiting for the Bluetooth codec after this long in ms (0 = wait forever, as before)");
++
++static DEFINE_MUTEX(bt_deadline_lock);
++static unsigned long bt_deadline_start;	/* jiffies of the first defer; 0 = not armed */
++static bool bt_probe_settled;			/* the card has registered; the timer must not touch it again */
++static struct device *bt_reprobe_dev;
++
++static void sm8250_bt_deadline_expired(struct work_struct *work);
++/*
++ * Statically initialized on purpose, not via INIT_DELAYED_WORK() inside
++ * probe(): probe() only reaches that branch when Bluetooth is actually
++ * deferred, but the unconditional cancel_delayed_work() on the
++ * ordinary success path (below) has to be safe to call every single time,
++ * including the common case where this work item was never armed at all.
++ * Cancelling a work item that was declared like this but never scheduled is
++ * a defined no-op; cancelling one that was merely zero-initialized is not.
++ */
++static DECLARE_DELAYED_WORK(bt_deadline_work, sm8250_bt_deadline_expired);
++
++/*
++ * status="disabled" makes qcom_snd_parse_of()'s own
++ * for_each_available_child_of_node() skip the node on its next call - no
++ * other code needs to know these two links ever existed.
++ *
++ * of_add_property(), not of_update_property(): the latter is not exported
++ * (only usable by code built into vmlinux, not by a loadable module like
++ * this one - confirmed the hard way, at link time). Not a real limitation
++ * here: neither slim7-rx-dai-link nor slim7-tx-dai-link carries a status
++ * property in the DTS to begin with, so there is nothing to update, only to
++ * add. of_add_property() itself already refuses a duplicate name
++ * (-EEXIST) rather than corrupting the property list, so the one case this
++ * cannot handle - some future DTS edit that adds an explicit status of its
++ * own - fails safely: a warning, and the node is left enabled.
++ */
++static void sm8250_disable_dai_link_node(struct device_node *parent, const char *name)
++{
++	struct device_node *np = of_get_child_by_name(parent, name);
++	struct property *prop;
++	int ret;
++
++	if (!np)
++		return;
++
++	prop = kzalloc(sizeof(*prop), GFP_KERNEL);
++	if (!prop)
++		goto out;
++	prop->name = kstrdup("status", GFP_KERNEL);
++	prop->value = kstrdup("disabled", GFP_KERNEL);
++	if (!prop->name || !prop->value) {
++		kfree(prop->name);
++		kfree(prop->value);
++		kfree(prop);
++		goto out;
++	}
++	prop->length = strlen(prop->value) + 1;
++
++	ret = of_add_property(np, prop);
++	if (ret) {
++		pr_warn("sm8250: could not disable %s: %d\n", name, ret);
++		kfree(prop->name);
++		kfree(prop->value);
++		kfree(prop);
++	}
++out:
++	of_node_put(np);
++}
++
++/*
++ * The one forced kick past the deadline, so giving up does not depend on
++ * some unrelated driver happening to bind and trigger a normal retry.
++ *
++ * device_reprobe() is the targeted, single-device counterpart of what a
++ * fresh deferred-probe retry would do - unlike the driver core's own
++ * (unexported) global retry trigger, it only touches this one device.
++ *
++ * Guarded by bt_probe_settled: if the card already registered through an
++ * ordinary retry before this fires (Bluetooth turned up in time after all),
++ * calling device_reprobe() here would tear down a working card just to
++ * probe it again. bt_deadline_work is also cancelled the moment probe
++ * succeeds (see below - with the non-waiting cancel_delayed_work(), which
++ * matters because probe() can be running inside this very work item), so
++ * reaching this function at all without the flag set should not happen in
++ * practice; the check is a second line of defence, not the only one.
++ */
++static void sm8250_bt_deadline_expired(struct work_struct *work)
++{
++	struct device *dev;
++	bool settled;
++
++	/*
++	 * device_reprobe() can call straight back into
++	 * sm8250_platform_probe() on THIS thread before returning - probe()
++	 * takes bt_deadline_lock itself, and a plain mutex is not reentrant,
++	 * so it must not still be held when device_reprobe() is called.
++	 * Reading the guarded state first and calling device_reprobe()
++	 * afterwards, unlocked, avoids that self-deadlock. It leaves a small
++	 * window where the card could finish registering right after this
++	 * reads settled=false; the worst that does is force one harmless
++	 * extra reprobe of an already-working card, not a hang or a crash.
++	 */
++	mutex_lock(&bt_deadline_lock);
++	settled = bt_probe_settled;
++	dev = bt_reprobe_dev;
++	mutex_unlock(&bt_deadline_lock);
++
++	if (!settled && dev) {
++		int ret = device_reprobe(dev);
++
++		if (ret)
++			dev_dbg(dev, "forced reprobe after the Bluetooth deadline: %d\n", ret);
++	}
++}
++
++/* Whether this board's DT carries the Bluetooth SLIMBUS_7 links at all. */
++static bool sm8250_has_bt_links(struct device_node *of_node)
++{
++	struct device_node *np = of_get_child_by_name(of_node, "slim7-rx-dai-link");
++	bool has = !!np;
++
++	of_node_put(np);
++	return has;
++}
++
++/*
++ * Runs only while ret == -EPROBE_DEFER on a board that has the Bluetooth
++ * links (sm8250_has_bt_links() checked by the caller) - everywhere else this
++ * whole path is skipped and behaviour is exactly what it was before this was
++ * added.
++ */
++static int sm8250_bt_deadline_check(struct device *dev, struct snd_soc_card *card, int ret)
++{
++	mutex_lock(&bt_deadline_lock);
++
++	if (!bt_deadline_start) {
++		/*
++		 * Not devm-managed: returning -EPROBE_DEFER from probe() runs
++		 * devres_release_all() on this device immediately, same as a
++		 * hard failure - a devm action registered right here would be
++		 * undone before this function even returns, cancelling the
++		 * timer before it could ever fire. This module is never
++		 * unloaded during normal operation (only a fresh boot reloads
++		 * it), so the one-shot timer is left to run its course;
++		 * sm8250_bt_deadline_expired() is a no-op if the card has
++		 * since registered.
++		 */
++		bt_deadline_start = jiffies;
++		bt_reprobe_dev = dev;
++		schedule_delayed_work(&bt_deadline_work,
++				msecs_to_jiffies(bt_deadline_ms) + HZ * 2);
++	}
++
++	if (!time_after(jiffies, bt_deadline_start + msecs_to_jiffies(bt_deadline_ms)))
++		goto out;
++
++	/*
++	 * Past the deadline. One more plain attempt first: if whatever was
++	 * actually missing (Bluetooth or not) has turned up right around
++	 * now, use it - do not disable Bluetooth on the strength of a defer
++	 * that turns out, on this fresh check, to have been about something
++	 * else.
++	 */
++	ret = qcom_snd_parse_of(card);
++	if (ret != -EPROBE_DEFER)
++		goto out;
++
++	dev_warn(dev,
++		"Bluetooth codec still absent after %u ms, continuing without it (reboot to retry)\n",
++		bt_deadline_ms);
++	sm8250_disable_dai_link_node(dev->of_node, "slim7-rx-dai-link");
++	sm8250_disable_dai_link_node(dev->of_node, "slim7-tx-dai-link");
++	ret = qcom_snd_parse_of(card);
++out:
++	mutex_unlock(&bt_deadline_lock);
++	return ret;
++}
++
+ static int sm8250_platform_probe(struct platform_device *pdev)
+ {
+ 	struct snd_soc_card *card;
+@@ -187,13 +495,43 @@ static int sm8250_platform_probe(struct platform_device *pdev)
+ 	card->dev = dev;
+ 	dev_set_drvdata(dev, card);
+ 	snd_soc_card_set_drvdata(card, data);
++
+ 	ret = qcom_snd_parse_of(card);
++	if (ret == -EPROBE_DEFER && bt_deadline_ms && sm8250_has_bt_links(dev->of_node))
++		ret = sm8250_bt_deadline_check(dev, card, ret);
+ 	if (ret)
+ 		return ret;
+ 
+ 	card->driver_name = of_device_get_match_data(dev);
+ 	sm8250_add_be_ops(card);
+-	return devm_snd_soc_register_card(dev, card);
++
++	ret = devm_snd_soc_register_card(dev, card);
++	if (ret)
++		return ret;
++
++	mutex_lock(&bt_deadline_lock);
++	bt_probe_settled = true;
++	mutex_unlock(&bt_deadline_lock);
++
++	/*
++	 * NOT the _sync variant. cancel_delayed_work_sync() waits for a running
++	 * work item to finish, and this probe() can BE that work item:
++	 * sm8250_bt_deadline_expired() calls device_reprobe(), which re-enters
++	 * probe() synchronously on the same workqueue thread. Waiting there is
++	 * a deadlock against ourselves - the card registers fine, then the
++	 * kworker never returns and hung_task_panic reboots the machine two
++	 * minutes later. (Seen on surya: hung_task panic with
++	 * sm8250_platform_probe <- device_reprobe <- sm8250_bt_deadline_expired
++	 * on the stack.)
++	 *
++	 * The non-waiting cancel is sufficient: bt_probe_settled, set just
++	 * above, already makes a timer that is running or fires later a no-op,
++	 * and the timer is one-shot - sm8250_bt_deadline_check() only arms it
++	 * on the first defer.
++	 */
++	cancel_delayed_work(&bt_deadline_work);
++
++	return 0;
+ }
+ 
+ static const struct of_device_id snd_sm8250_dt_match[] = {
+-- 
+2.47.3
+

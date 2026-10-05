@@ -1,0 +1,81 @@
+From 6c6e1fc0731c7301f05c1421a40364f5bc9cc4b3 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 19:12:12 +0200
+Subject: [PATCH] wwan: disconnect only our own bearer
+
+When deactivating a modem connection, NMModemBroadband calls
+mm_modem_simple_disconnect() with a NULL bearer path, which makes
+ModemManager disconnect ALL bearers of the modem. That includes bearers
+NetworkManager does not own, e.g. the IMS bearer brought up by a VoLTE
+daemon (81voltd on Qualcomm phones running postmarketOS).
+
+The IMS bearer is then reconnected by its owner, and the IMS
+registration that follows wakes the SoC. Since NetworkManager
+deactivates the modem connection on every system sleep, a phone with
+mobile data enabled wakes up a few seconds after each suspend.
+
+Remember the path of the bearer we connected and pass it to
+mm_modem_simple_disconnect(). The MMBearer object itself cannot be
+used: NMModem calls deactivate_cleanup(), which clears it, before
+disconnect(). The path is kept until the next connection or dispose,
+since disconnect() may be called more than once for one deactivation.
+Keep disconnecting all bearers only when the path is unknown.
+---
+ src/core/devices/wwan/nm-modem-broadband.c | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/src/core/devices/wwan/nm-modem-broadband.c b/src/core/devices/wwan/nm-modem-broadband.c
+index 4bd0a45..127c907 100644
+--- a/src/core/devices/wwan/nm-modem-broadband.c
++++ b/src/core/devices/wwan/nm-modem-broadband.c
+@@ -82,6 +82,9 @@ typedef struct {
+     ConnectContext *ctx;
+ 
+     MMBearer         *bearer;
++    /* Path of the bearer we connected. Unlike 'bearer', it survives
++     * deactivate_cleanup(), which runs before disconnect(). */
++    char             *bearer_path;
+     MMBearerIpConfig *ipv4_config;
+     MMBearerIpConfig *ipv6_config;
+ 
+@@ -384,6 +387,11 @@ connect_ready(MMModemSimple *simple_iface, GAsyncResult *res, NMModemBroadband *
+ 
+     self->_priv.bearer = g_steal_pointer(&bearer);
+ 
++    if (self->_priv.bearer) {
++        g_free(self->_priv.bearer_path);
++        self->_priv.bearer_path = g_strdup(mm_bearer_get_path(self->_priv.bearer));
++    }
++
+     if (!self->_priv.bearer) {
+         if (g_error_matches(error, MM_MOBILE_EQUIPMENT_ERROR, MM_MOBILE_EQUIPMENT_ERROR_SIM_PIN)
+             || (g_error_matches(error, MM_CORE_ERROR, MM_CORE_ERROR_UNAUTHORIZED)
+@@ -1376,9 +1384,14 @@ disconnect(NMModem                   *modem,
+         return;
+     }
+ 
+-    _LOGD("notifying ModemManager about the modem disconnection");
++    /* Disconnect only the bearer we connected. With NULL, ModemManager disconnects
++     * ALL bearers of the modem, including those owned by other clients (e.g. the
++     * IMS bearer of a VoLTE daemon), which then get reconnected right away.
++     * Fall back to NULL only if we never learnt the path. */
++    _LOGD("notifying ModemManager about the modem disconnection (bearer %s)",
++          self->_priv.bearer_path ?: "all");
+     mm_modem_simple_disconnect(self->_priv.simple_iface,
+-                               NULL, /* bearer path; if NULL given ALL get disconnected */
++                               self->_priv.bearer_path,
+                                cancellable,
+                                simple_disconnect_ready,
+                                ctx);
+@@ -1666,6 +1679,7 @@ dispose(GObject *object)
+     g_clear_object(&priv->ipv4_config);
+     g_clear_object(&priv->ipv6_config);
+     g_clear_object(&priv->bearer);
++    g_clear_pointer(&priv->bearer_path, g_free);
+ 
+     if (priv->modem_iface) {
+         g_signal_handlers_disconnect_by_data(priv->modem_iface, self);
+-- 
+2.43.0
+

@@ -1,0 +1,34 @@
+From 2358c4803c59c91968ac1e15b8afad561f13e3f9 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 00:48:49 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: S5KJN1 link
+ frequency is 700 MHz
+
+The S5KJN1 driver only lists a 700 MHz link frequency (the 19.2 MHz MCLK
+settings keep the same output PLL as the 24 MHz ones), while the ultra
+wide camera endpoint asked for 600 MHz: the sensor failed to probe with
+"no matching link frequencies found", and CAMSS, waiting for every
+sensor in its graph, never registered the front camera either.
+
+Use 700 MHz, as in the spacewar-next tree.
+---
+ arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index f87710062..ad3907919 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -973,7 +973,7 @@ port {
+ 			camera_s5kjn1_ep: endpoint {
+ 				data-lanes = <1 2 3 4>;
+ 				bus-type = <MEDIA_BUS_TYPE_CSI2_DPHY>;
+-				link-frequencies = /bits/ 64 <600000000>;
++				link-frequencies = /bits/ 64 <700000000>;
+ 				remote-endpoint = <&csiphy2_ep>;
+ 			};
+ 		};
+-- 
+2.47.3
+

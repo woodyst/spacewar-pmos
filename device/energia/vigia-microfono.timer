@@ -1,0 +1,11 @@
+[Unit]
+Description=Mira cada 5 min si algo dejo el microfono abierto con la pantalla apagada
+
+[Timer]
+OnStartupSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

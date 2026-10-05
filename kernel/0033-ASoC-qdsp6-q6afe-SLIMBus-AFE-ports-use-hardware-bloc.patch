@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 21:48:35 +0200
+Subject: [PATCH 33/37] ASoC: qdsp6: q6afe: SLIMBus AFE ports use hardware
+ block 0 on the Nothing Phone (1)
+
+The SLIMBus block id sent in the port config is a property of the board.
+Block 1 made the port run on the Xiaomi surya (sdmmagpie), and the series
+inherited it. On the Nothing Phone (1) the vendor device tree sets
+qcom,msm-dai-q6-slim-dev-id = <0> on sb-7-rx and sb-7-tx, and with 1 the
+ADSP fails AFE_PORT_CMD_DEVICE_START on 0x400e/0x400f:
+
+    qcom-q6afe aprsvc:service:4:4: cmd = 0x100e5 returned error = 0x1
+    q6afe-dai ...: fail to start AFE port 97
+
+With 0, Bluetooth call audio flows both ways between the DSP and the
+WCN6750 (tone measured at the far end of a real call). Until now a boot
+service wrote 0 to the parameter; make it the default.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index bf3228e09..02efe887f 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -1555,11 +1555,14 @@ EXPORT_SYMBOL_GPL(q6afe_port_stop);
+  * zeroed, and the ADSP acknowledged it happily while the port never moved a
+  * single frame - no error anywhere, the port simply never ran.
+  *
+- * Block 1 is what makes it work here, and it is what the downstream driver
+- * sends for every SLIMBus port. Left writable because it is a property of the
+- * board and finding it again would otherwise cost a reboot per guess.
++ * It is a property of the board. On the Xiaomi surya (sdmmagpie) block 1 made
++ * the port run. On the Nothing Phone (1) the vendor device tree sets
++ * qcom,msm-dai-q6-slim-dev-id = <0> on sb-7-rx and sb-7-tx, and with 1 the
++ * ADSP fails AFE_PORT_CMD_DEVICE_START on 0x400e/0x400f with error 1; with 0
++ * Bluetooth call audio flows both ways. Left writable because finding it again
++ * would otherwise cost a reboot per guess.
+  */
+-static ushort slim_dev_id = 1;
++static ushort slim_dev_id;
+ module_param(slim_dev_id, ushort, 0644);
+ MODULE_PARM_DESC(slim_dev_id, "SLIMBus hardware block for SLIMBus AFE ports");
+ 
+-- 
+2.47.3
+

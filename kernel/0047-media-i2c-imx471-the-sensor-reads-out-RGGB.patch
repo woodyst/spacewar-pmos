@@ -1,0 +1,33 @@
+From 17d60e6205ec5daba8a77fae877c5eb572a7312c Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 01:50:23 +0200
+Subject: [PATCH] media: i2c: imx471: the sensor reads out RGGB
+
+The mode advertised SGRBG10, but with no flip the IMX471 reads out an
+RGGB pattern: a raw frame of the Nothing Phone (1) front camera has its
+two matching greens at positions (0,1) and (1,0), and the mainline
+driver lists SRGGB10 for the unflipped orientation. Debayering it as
+GRBG gave a green/magenta cast and coloured blocks all over the image.
+
+Advertise SRGGB10.
+---
+ drivers/media/i2c/imx471.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/media/i2c/imx471.c b/drivers/media/i2c/imx471.c
+index d5775cf05..dc7f547c5 100644
+--- a/drivers/media/i2c/imx471.c
++++ b/drivers/media/i2c/imx471.c
+@@ -305,7 +305,7 @@ static const struct imx471_mode supported_mode = {
+ 	.vblank_max = 1522 - 648, // FIXME: need recheck(AI): min(frame_length_lines) - min(height)
+ 	.pclk = 137000000, // VTPXCK x 4
+ 	.link_freq_idx = 0,
+-	.code = MEDIA_BUS_FMT_SGRBG10_1X10,
++	.code = MEDIA_BUS_FMT_SRGGB10_1X10,
+ 	.reg_list = {
+ 		.num_of_regs = ARRAY_SIZE(mode_2304x1728_regs),
+ 		.regs = mode_2304x1728_regs,
+-- 
+2.47.3
+

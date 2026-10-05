@@ -1,0 +1,7 @@
+[Unit]
+Description=Vigilante del microfono abierto (avisa, no cierra nada)
+Documentation=file:///usr/local/bin/vigia-microfono.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vigia-microfono.sh

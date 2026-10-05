@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 22:58:27 +0200
+Subject: [PATCH 27/27] misc: fastrpc: give remote heap memory back to HLOS
+ before freeing it
+
+A remote heap mapping (ADSP_MMAP_REMOTE_HEAP_ADDR) is assigned to the channel VMs with
+qcom_scm_assign_mem() once the DSP has mapped it, but unmapping it, or releasing the user with it still
+mapped, freed the buffer straight back to its pool, whose next allocation zeroes memory the kernel no
+longer owns. Reassign it to HLOS first and keep (leak) the buffer if that fails.
+
+Ported from the POCO X3 NFC series (where the mmaps were freed in fastrpc_device_release) to 7.2.2,
+which frees them in fastrpc_user_free.
+---
+ drivers/misc/fastrpc.c | 44 ++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/misc/fastrpc.c b/drivers/misc/fastrpc.c
+index eb6c2a78d..fcdb19423 100644
+--- a/drivers/misc/fastrpc.c
++++ b/drivers/misc/fastrpc.c
+@@ -202,6 +202,8 @@ struct fastrpc_buf {
+ 	/* mmap support */
+ 	struct list_head node; /* list of user requested mmaps */
+ 	uintptr_t raddr;
++	/* remote heap memory handed to the DSP's VMs (qcom,vmids) */
++	bool scm_assigned;
+ };
+ 
+ struct fastrpc_dma_buf_attachment {
+@@ -420,6 +422,40 @@ static int fastrpc_map_lookup(struct fastrpc_user *fl, int fd,
+ 	return ret;
+ }
+ 
++/*
++ * Take remote heap memory back from the DSP's VMs before it goes back to the
++ * pool: the next allocation zeroes it, and the kernel may not touch memory it
++ * has handed away. On failure the buffer must not be freed.
++ */
++static int fastrpc_buf_unassign(struct fastrpc_buf *buf)
++{
++	struct fastrpc_channel_ctx *cctx = buf->fl->cctx;
++	struct qcom_scm_vmperm dst_perms = {
++		.vmid = QCOM_SCM_VMID_HLOS,
++		.perm = QCOM_SCM_PERM_RWX,
++	};
++	u64 src_perms = 0;
++	u32 i;
++	int err;
++
++	if (!buf->scm_assigned)
++		return 0;
++
++	for (i = 0; i < cctx->vmcount; i++)
++		src_perms |= BIT(cctx->vmperms[i].vmid);
++
++	err = qcom_scm_assign_mem(buf->dma_addr, (u64)buf->size, &src_perms,
++				  &dst_perms, 1);
++	if (err) {
++		dev_err(buf->dev, "Failed to reassign memory dma_addr %pad size 0x%llx err %d\n",
++			&buf->dma_addr, buf->size, err);
++		return err;
++	}
++
++	buf->scm_assigned = false;
++	return 0;
++}
++
+ static void fastrpc_buf_free(struct fastrpc_buf *buf)
+ {
+ 	dma_free_coherent(buf->dev, buf->size, buf->virt,
+@@ -528,7 +564,9 @@ static void fastrpc_user_free(struct kref *ref)
+ 
+ 	list_for_each_entry_safe(buf, b, &fl->mmaps, node) {
+ 		list_del(&buf->node);
+-		fastrpc_buf_free(buf);
++		/* leak rather than free memory the DSP's VMs may still own */
++		if (!fastrpc_buf_unassign(buf))
++			fastrpc_buf_free(buf);
+ 	}
+ 
+ 	fastrpc_channel_ctx_put(fl->cctx);
+@@ -1892,7 +1930,8 @@ static int fastrpc_req_munmap_impl(struct fastrpc_user *fl, struct fastrpc_buf *
+ 				      &args[0]);
+ 	if (!err) {
+ 		dev_dbg(dev, "unmmap\tpt 0x%09lx OK\n", buf->raddr);
+-		fastrpc_buf_free(buf);
++		if (!fastrpc_buf_unassign(buf))
++			fastrpc_buf_free(buf);
+ 	} else {
+ 		dev_err(dev, "unmmap\tpt 0x%09lx ERROR\n", buf->raddr);
+ 	}
+@@ -2016,6 +2055,7 @@ static int fastrpc_req_mmap(struct fastrpc_user *fl, char __user *argp)
+ 				&buf->dma_addr, buf->size, err);
+ 			goto err_assign;
+ 		}
++		buf->scm_assigned = true;
+ 	}
+ 
+ 	spin_lock(&fl->lock);
+-- 
+2.47.3
+

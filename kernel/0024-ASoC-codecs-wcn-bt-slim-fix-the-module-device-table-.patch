@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 21:39:21 +0200
+Subject: [PATCH] ASoC: codecs: wcn-bt-slim: fix the module device table type
+ so the module autoloads
+
+MODULE_DEVICE_TABLE(slimbus, ...) produces no alias: modpost only knows the "slim" table type
+(scripts/mod/file2alias.c). Without the slim:217:22x:* aliases the module never loads on its own, the
+sound card waits 90 s for the SLIMBUS_7 codec on every boot and PipeWire, started meanwhile, is left
+with a stuck playback path.
+---
+ sound/soc/codecs/wcn-bt-slim.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index 887b339f2..1e0dd4ebc 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -1456,7 +1456,7 @@ static const struct slim_device_id wcn_bt_slim_id[] = {
+ 	{ 0x217, 0x221, 0x1, 0x0 },	/* WCN6750 ported generic device */
+ 	{}
+ };
+-MODULE_DEVICE_TABLE(slimbus, wcn_bt_slim_id);
++MODULE_DEVICE_TABLE(slim, wcn_bt_slim_id);
+ 
+ static struct slim_driver wcn_bt_slim_driver = {
+ 	.driver = {
+-- 
+2.47.3
+

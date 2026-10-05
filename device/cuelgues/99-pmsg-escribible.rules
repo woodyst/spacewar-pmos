@@ -1,0 +1,6 @@
+# /etc/udev/rules.d/99-pmsg-escribible.rules — spacewar (2026-09-13), como surya
+#
+# /dev/pmsg0 es el canal de pstore para el espacio de usuario: lo que se escribe ahí sobrevive al reinicio y
+# reaparece en /var/lib/systemd/pstore/pmsg-ramoops-0. De serie es root:root; se abre al grupo wheel para que
+# un servicio de usuario pueda dejar rastro justo antes de un cuelgue.
+KERNEL=="pmsg0", GROUP="wheel", MODE="0660"

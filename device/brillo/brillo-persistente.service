@@ -1,0 +1,16 @@
+[Unit]
+Description=Brillo de pantalla persistente entre arranques
+# Solo detrás del greeter. NO After=graphical.target: un target se ordena después de lo que quiere,
+# así que «WantedBy=<target> + After=graphical.target» es un ciclo y systemd tira el trabajo sin
+# ejecutarlo (en surya este servicio no llegó a arrancar nunca por eso). La espera de 12 s del
+# script deja que la sesión ponga su brillo antes.
+After=greetd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/brillo-persistente.sh restaurar
+ExecStop=/usr/local/bin/brillo-persistente.sh guardar
+
+[Install]
+WantedBy=graphical.target

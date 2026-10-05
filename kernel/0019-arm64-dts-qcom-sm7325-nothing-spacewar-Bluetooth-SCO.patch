@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 20:00:14 +0200
+Subject: [PATCH 19/20] arm64: dts: qcom: sm7325-nothing-spacewar: Bluetooth
+ SCO over SLIMbus
+
+Enable slimbam and slim-ngd@3ac0000, describe the WCN6750 audio side (slim217,221, interface
+device 0 and ported device 1, from the stock device tree) and add the SLIMBUS_7 playback and
+capture links to it, so a voice call can be routed to a Bluetooth headset inside the DSP.
+---
+ .../boot/dts/qcom/sm7325-nothing-spacewar.dts | 69 +++++++++++++++++++
+ 1 file changed, 69 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index e85d487ca..533e3a5a2 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1587,6 +1587,43 @@ platform {
+ 			sound-dai = <&q6routing>;
+ 		};
+ 	};
++
++	/*
++	 * Bluetooth call audio: the DSP port SLIMBUS_7 on one end and the WCN6750 SCO ports on the
++	 * other, as the stock firmware does. A CS voice call never crosses the CPU, so a headset can
++	 * only get it this way. Backend links: they add no PCM and do not shift the numbering.
++	 */
++	slim7-rx-dai-link {
++		link-name = "SLIMBUS_7 Playback";
++
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_7_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&bt_audio 0>;
++		};
++	};
++
++	slim7-tx-dai-link {
++		link-name = "SLIMBUS_7 Capture";
++
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_7_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&bt_audio 1>;
++		};
++	};
+ };
+ 
+ 
+@@ -1817,6 +1854,38 @@ &uart5 {
+ 	status = "okay";
+ };
+ 
++/*
++ * SLIMbus to the WCN6750 audio side, for Bluetooth call audio. Stock: slim@3ac0000 (cell-index 1),
++ * chip at elemental address [00 01 21 02 17 02] and its interface device at [00 00 21 02 17 02].
++ * NGD reg 1 makes the ADSP attach it to instance 0 (id >> 1), as cell-index 1 does downstream.
++ */
++&slimbam {
++	status = "okay";
++};
++
++&slim {
++	status = "okay";
++
++	slim@1 {
++		reg = <1>;
++		#address-cells = <2>;
++		#size-cells = <0>;
++
++		/* Both halves are needed: the interface device carries register access, the ported one owns the audio ports. */
++		bt_ifd: bt-ifd@0,0 {
++			compatible = "slim217,221";
++			reg = <0 0>;
++		};
++
++		bt_audio: bt-audio@1,0 {
++			compatible = "slim217,221";
++			reg = <1 0>;
++			/* Two DAIs: SCO downlink and SCO uplink. */
++			#sound-dai-cells = <1>;
++		};
++	};
++};
++
+ &uart7 {
+ 	/delete-property/interrupts;
+ 	interrupts-extended = <&intc GIC_SPI 608 IRQ_TYPE_LEVEL_HIGH>,
+-- 
+2.47.3
+

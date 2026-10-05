@@ -1,0 +1,37 @@
+# Forked from Alpine (community) for a temporary downstream patch
+# spacewar (2026-09-14): 0001 corrige Pepephone (España): hoy sus SIM son MCC 214 / MNC 04 (Yoigo) con APN «internet»
+# (https://www.pepephone.com/configura-tu-movil); la base traía la entrada antigua 214-06 con gprs.pepephone.com y
+# gprsmov.pepephone.com, que ya no funcionan. Sin arreglo en upstream a 20251101. Compila scripts/84-base-operadores.sh.
+# pkgrel alto a propósito: por encima del r1 de Alpine para que apk prefiera este, sin cambiar pkgver.
+# Contributor: Francesco Colista <fcolista@alpinelinux.org>
+maintainer="Achill Gilgenast <achill@achill.org>"
+pkgname=mobile-broadband-provider-info
+pkgver=20251101
+pkgrel=91
+pkgdesc="Mobile broadband settings for various service providers"
+url="https://gitlab.gnome.org/GNOME/mobile-broadband-provider-info/"
+arch="noarch"
+license="CC-PDDC"
+makedepends="libxml2-utils libxslt meson"
+# not using the CI release process: https://gitlab.gnome.org/GNOME/mobile-broadband-provider-info/-/merge_requests/139
+source="https://gitlab.gnome.org/GNOME/mobile-broadband-provider-info/-/archive/$pkgver/mobile-broadband-provider-info-$pkgver.tar.gz
+	0001-Spain-Pepephone-update-network-ID-and-APN.patch
+	"
+
+build() {
+	abuild-meson . output
+	meson compile -C output
+}
+
+check() {
+	meson test -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+008376186cc19e3223ab09b049aa2f87c7a1473f91eef2d9f39d52e6b27c9b88c2f0a711b8afdf77e010cc0d36d13f4c4ea84cccc795cd0c334a22c79e6f135f  mobile-broadband-provider-info-20251101.tar.gz
+932003d1506d70e2cbd51e71ee7dc04c6e147761a8713113b139546cda218fe2c0929a8ff834a34a6a0cc1822d6ed26f093a482cd110277816f06381e0296e5a  0001-Spain-Pepephone-update-network-ID-and-APN.patch
+"

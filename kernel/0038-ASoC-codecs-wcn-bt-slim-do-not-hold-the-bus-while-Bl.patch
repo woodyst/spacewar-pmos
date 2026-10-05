@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 22:07:09 +0200
+Subject: [PATCH] ASoC: codecs: wcn-bt-slim: do not hold the bus while
+ Bluetooth boots the chip
+
+Holding the SLIMBus controller from probe, before the Bluetooth driver
+downloads the firmware, broke enumeration for the whole boot on the Nothing
+Phone (1): with the bus up and never restarted for 60 s (a single "Rcvd
+master capability"), and even after forcing it again later, every logical
+address query returned -ENXIO. On the previous kernel the bus kept
+suspending while the chip booted, and holding it for a few seconds
+afterwards found the chip at the first query.
+
+So leave the bus alone while the chip may still be booting: poll quietly
+for 5 s as before, then from 15 s on run bursts - take the runtime PM
+reference, give the chip 3 s to synchronise, query, release - every 10 s,
+for up to 30 bursts. The startup retry only releases the reference if it
+took it itself, so it cannot drop one a burst is relying on.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/codecs/wcn-bt-slim.c | 68 +++++++++++++++++++++++++---------
+ 1 file changed, 50 insertions(+), 18 deletions(-)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index cbe38b040..2cd524a92 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -109,15 +109,25 @@
+  * to synchronise and report present, and the NGD runtime-suspends after 100 ms
+  * idle, which makes the ADSP tear the whole bus down. Polled from a quiet bus,
+  * every query landed milliseconds after the bus had been brought back up and
+- * the WCN6750 never enumerated ("chip never showed up on the bus"). So the
+- * controller is held resumed while polling, and released as soon as the chip
+- * has an address or the poll gives up: the address survives later suspends.
+- * The vendor driver does the same in effect, polling every millisecond with
+- * the bus up. Sixty seconds, because the bus being up no longer depends on the
+- * polling and Bluetooth may bring the chip up late.
++ * the WCN6750 never enumerated ("chip never showed up on the bus").
++ *
++ * But the bus must NOT be held up while Bluetooth boots the chip: holding it
++ * from probe (before the firmware download) left the WCN6750 unable to join
++ * for the rest of the boot, even across later bus restarts (kernel r121,
++ * measured 2026-09-13). What works, measured on r120, is the bus left alone
++ * while the chip boots, then held up for a few seconds once it is running.
++ *
++ * So: a quiet poll first, as before, then bursts - hold the controller, wait
++ * WCN_LADDR_HOLD_MS for the chip to synchronise, query, release - every
++ * WCN_LADDR_BURST_PERIOD_MS for up to WCN_LADDR_BURSTS bursts. The address
++ * survives the controller suspending afterwards.
+  */
+-#define WCN_LADDR_TRIES			240
++#define WCN_LADDR_TRIES			20
+ #define WCN_LADDR_POLL_MS		250
++#define WCN_LADDR_FIRST_BURST_MS	15000
++#define WCN_LADDR_HOLD_MS		3000
++#define WCN_LADDR_BURST_PERIOD_MS	10000
++#define WCN_LADDR_BURSTS		30
+ /* Second chance from stream startup, as the vendor driver does: 1 s, 10 ms apart. */
+ #define WCN_STARTUP_LADDR_TRIES		100
+ #define WCN_STARTUP_LADDR_POLL_MS	10
+@@ -127,6 +137,7 @@ struct wcn_bt_slim {
+ 	struct slim_device *pgd;
+ 	struct delayed_work laddr_work;
+ 	int tries;
++	int bursts;
+ 	bool ready;
+ 	/* Holding a runtime PM reference on the SLIMBus controller. */
+ 	bool bus_held;
+@@ -334,13 +345,24 @@ static void wcn_bt_slim_laddr_work(struct work_struct *work)
+ 	struct wcn_bt_slim *wb = container_of(to_delayed_work(work),
+ 					      struct wcn_bt_slim, laddr_work);
+ 
++	unsigned long delay;
++
+ 	mutex_lock(&wcn_bt_lock);
+ 
++	/* A burst starts by holding the bus up and giving the chip time to join. */
++	if (wb->tries >= WCN_LADDR_TRIES && !wb->bus_held) {
++		wcn_bt_slim_hold_bus(wb, true);
++		schedule_delayed_work(&wb->laddr_work,
++				      msecs_to_jiffies(WCN_LADDR_HOLD_MS));
++		mutex_unlock(&wcn_bt_lock);
++		return;
++	}
++
+ 	if (!wcn_bt_slim_query_laddr(wb))
+ 		goto retry;
+ 
+-	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x (after %d tries)\n",
+-		 wb->pgd->laddr, wb->ifd->laddr, wb->tries + 1);
++	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x (quiet tries %d, bursts %d)\n",
++		 wb->pgd->laddr, wb->ifd->laddr, min(wb->tries + 1, WCN_LADDR_TRIES), wb->bursts);
+ 	wcn_bt_slim_hold_bus(wb, false);
+ 
+ 	if (!wcn_bt_slim_read_hw_rev(wb))
+@@ -350,14 +372,22 @@ static void wcn_bt_slim_laddr_work(struct work_struct *work)
+ 	return;
+ 
+ retry:
+-	if (++wb->tries < WCN_LADDR_TRIES) {
+-		schedule_delayed_work(&wb->laddr_work,
+-				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
++	if (wb->tries < WCN_LADDR_TRIES) {
++		/* quiet poll, bus left alone while Bluetooth may still be booting the chip */
++		wb->tries++;
++		delay = wb->tries < WCN_LADDR_TRIES ? WCN_LADDR_POLL_MS : WCN_LADDR_FIRST_BURST_MS;
+ 	} else {
++		/* end of a burst: let the bus go and try again later */
+ 		wcn_bt_slim_hold_bus(wb, false);
+-		dev_warn(wb->pgd ? &wb->pgd->dev : &wb->ifd->dev,
+-			 "chip never showed up on the bus\n");
++		if (++wb->bursts >= WCN_LADDR_BURSTS) {
++			dev_warn(wb->pgd ? &wb->pgd->dev : &wb->ifd->dev,
++				 "chip never showed up on the bus\n");
++			mutex_unlock(&wcn_bt_lock);
++			return;
++		}
++		delay = WCN_LADDR_BURST_PERIOD_MS - WCN_LADDR_HOLD_MS;
+ 	}
++	schedule_delayed_work(&wb->laddr_work, msecs_to_jiffies(delay));
+ 
+ 	mutex_unlock(&wcn_bt_lock);
+ }
+@@ -487,16 +517,18 @@ static int wcn_bt_slim_dai_startup(struct snd_pcm_substream *substream,
+ 	 */
+ 	if (!wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid ||
+ 	    !wcn_bt->pgd || !wcn_bt->pgd->is_laddr_valid) {
+-		bool found = false;
++		bool found = false, took;
+ 
+ 		mutex_lock(&wcn_bt_lock);
++		/* release it afterwards only if it was taken here, not by a burst in progress */
++		took = !wcn_bt->bus_held;
+ 		wcn_bt_slim_hold_bus(wcn_bt, true);
+ 		for (i = 0; i < WCN_STARTUP_LADDR_TRIES && !found; i++) {
+ 			found = wcn_bt_slim_query_laddr(wcn_bt);
+ 			if (!found)
+ 				msleep(WCN_STARTUP_LADDR_POLL_MS);
+ 		}
+-		if (!delayed_work_pending(&wcn_bt->laddr_work))
++		if (took)
+ 			wcn_bt_slim_hold_bus(wcn_bt, false);
+ 		mutex_unlock(&wcn_bt_lock);
+ 
+@@ -715,10 +747,10 @@ static int wcn_bt_slim_probe(struct slim_device *sdev)
+ 			dev_err(&sdev->dev, "cannot register codec: %d\n", cret);
+ 	}
+ 
+-	/* Start polling, with the bus held up, once both halves are here. */
++	/* Start polling once both halves are here (bus left alone: see WCN_LADDR_*). */
+ 	if (wcn_bt->ifd && wcn_bt->pgd) {
+ 		wcn_bt->tries = 0;
+-		wcn_bt_slim_hold_bus(wcn_bt, true);
++		wcn_bt->bursts = 0;
+ 		schedule_delayed_work(&wcn_bt->laddr_work,
+ 				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
+ 	}
+-- 
+2.47.3
+

@@ -1,0 +1,36 @@
+From: Eduardo García-Mádico Portabella <woodyst@gmail.com>
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: give each TFA9873 its own channel and name prefix
+
+Both amplifiers sit on the same primary MI2S line. The tfa987x driver picks the TDM slot it
+plays from the "sound-channel" property (TFA987X_TDM_CFG6 SPKS) and defaults to 0, so without it
+both amplifiers played the left channel. They also registered identical DAPM widgets ("PWUP",
+"Speaker"), which ASoC reports as overwritten, so the second amplifier was not reliably powered
+and the bottom speaker stayed silent.
+
+Put the earpiece amplifier (0x34) on channel 0 and the loudspeaker (0x35) on channel 1, each
+with its own sound-name-prefix.
+
+Signed-off-by: Eduardo García-Mádico Portabella <woodyst@gmail.com>
+---
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1065,6 +1065,9 @@
+ 		reg = <0x34>;
+ 		reset-gpio = <&tlmm 101 GPIO_ACTIVE_HIGH>;
+ 
++		sound-channel = <0>;
++		sound-name-prefix = "Earpiece";
++
+ 		#sound-dai-cells = <1>;
+ 	};
+ 
+@@ -1074,6 +1077,9 @@
+ 		reg = <0x35>;
+ 		reset-gpio = <&tlmm 101 GPIO_ACTIVE_HIGH>;
+ 
++		sound-channel = <1>;
++		sound-name-prefix = "Speaker";
++
+ 		#sound-dai-cells = <1>;
+ 	};
+ };

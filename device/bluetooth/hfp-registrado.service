@@ -1,0 +1,26 @@
+[Unit]
+Description=Vigila que el wireplumber vivo tenga registrado el perfil HFP
+Documentation=https://github.com/woodyst/surya-pmos
+# Detras de todo lo que reinicia wireplumber en el arranque, incluido el aviso
+# de las camaras (camss-diferido -> avisar-camaras.sh, que espera 5 s tras
+# cargar qcom_camss). La espera inicial la lleva el propio guion.
+After=graphical-session.target
+
+[Service]
+# ⚠️ Vigilancia CONTINUA, no una comprobacion y a casa. La primera version era
+# `oneshot` y se rendia si pillaba una llamada en curso -- que es exactamente
+# cuando hace falta: en los dos arranques que fallaron el 2026-08-25 el usuario
+# estaba al telefono en ese momento y el guardian se fue sin tocar nada las dos
+# veces. Ahora espera a que cuelgue y repara.
+# ⚠️ En reposo cuesta un `pgrep` al minuto: mientras el pid de wireplumber no
+# cambie, se reutiliza el veredicto anterior sin volver a leer el diario.
+Type=simple
+# spacewar (2026-09-21): espera inicial 15 s, no 90. Los 90 eran por avisar-camaras.sh de surya, que reinicia
+# wireplumber en el arranque; en spacewar no existe. Con 90, la primera llamada tras arrancar caía dentro de la
+# espera y salía por el auricular con «casco sin HFP» (21-09 13:06:59; el guardián reparó a las 13:07:44).
+ExecStart=/usr/local/bin/hfp-registrado.sh 15
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=graphical-session.target

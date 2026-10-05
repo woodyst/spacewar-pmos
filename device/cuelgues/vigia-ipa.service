@@ -1,0 +1,14 @@
+# /etc/systemd/system/vigia-ipa.service — spacewar (2026-09-14)
+# Vigila el atasco de IPA al suspenderse y, si pasa, bloquea la suspensión y avisa. Ver /usr/local/sbin/vigia-ipa.sh.
+[Unit]
+Description=Vigía de IPA: bloquear la suspensión si los datos móviles se atascan
+After=ModemManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/vigia-ipa.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

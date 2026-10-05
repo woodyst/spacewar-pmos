@@ -1,0 +1,179 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 22:23:51 +0200
+Subject: [PATCH] ASoC: codecs: wcn-bt-slim: look for the chip when a stream
+ starts, after the offloaded SCO
+
+The WCN6750 on the Nothing Phone (1) only takes a logical address after an
+offloaded SCO link (vendor data path) has been set up at least once since
+the chip booted. Measured on the phone: with no SCO, 30 bursts holding the
+bus for 3 s over five minutes never found it; right after an offloaded
+eSCO to a test headset, holding the bus found it at the first query, and the
+address survived the controller suspending afterwards.
+
+So the boot-time bursts only kept waking the bus for nothing. Drop them and
+keep the short quiet poll at boot. The real look is at stream startup,
+which is where the vendor driver looks for the chip too: by then the SCO of
+the call is up. Hold the controller and poll every 20 ms for up to 5 s,
+logging how long it took. Only the first call after boot has to wait.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/codecs/wcn-bt-slim.c | 90 ++++++++++++----------------------
+ 1 file changed, 32 insertions(+), 58 deletions(-)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index 2cd524a92..494e975b8 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -105,39 +105,35 @@
+ #define WCN_READ_TRIES			600
+ 
+ /*
+- * The chip only gets a logical address if the bus stays up long enough for it
+- * to synchronise and report present, and the NGD runtime-suspends after 100 ms
+- * idle, which makes the ADSP tear the whole bus down. Polled from a quiet bus,
+- * every query landed milliseconds after the bus had been brought back up and
+- * the WCN6750 never enumerated ("chip never showed up on the bus").
++ * The WCN6750 only takes a logical address once two things have happened: an
++ * offloaded SCO link (vendor data path) has been set up at least once since
++ * the chip booted, and the bus then stays up long enough for the chip to
++ * synchronise and report present. The NGD runtime-suspends after 100 ms idle
++ * and the ADSP tears the bus down, so a query from a quiet bus never finds it.
+  *
+- * But the bus must NOT be held up while Bluetooth boots the chip: holding it
+- * from probe (before the firmware download) left the WCN6750 unable to join
+- * for the rest of the boot, even across later bus restarts (kernel r121,
+- * measured 2026-09-13). What works, measured on r120, is the bus left alone
+- * while the chip boots, then held up for a few seconds once it is running.
++ * Measured on the Nothing Phone (1), 2026-09-13: with no SCO, neither holding
++ * the bus from probe (which even kept the chip from joining for the whole
++ * boot: the controller must not be held while Bluetooth boots the chip) nor 30
++ * bursts of 3 s over five minutes enumerated it; right after an offloaded
++ * eSCO, holding the bus found it at the first query, and the address survived
++ * later suspends.
+  *
+- * So: a quiet poll first, as before, then bursts - hold the controller, wait
+- * WCN_LADDR_HOLD_MS for the chip to synchronise, query, release - every
+- * WCN_LADDR_BURST_PERIOD_MS for up to WCN_LADDR_BURSTS bursts. The address
+- * survives the controller suspending afterwards.
++ * So at boot only a short quiet poll, as before, in case the chip is already
++ * there. The real look happens when a stream starts - the SCO is up by then -
++ * with the controller held, for up to WCN_STARTUP_LADDR_TRIES *
++ * WCN_STARTUP_LADDR_POLL_MS, which is also where the vendor driver looks for
++ * the chip.
+  */
+ #define WCN_LADDR_TRIES			20
+ #define WCN_LADDR_POLL_MS		250
+-#define WCN_LADDR_FIRST_BURST_MS	15000
+-#define WCN_LADDR_HOLD_MS		3000
+-#define WCN_LADDR_BURST_PERIOD_MS	10000
+-#define WCN_LADDR_BURSTS		30
+-/* Second chance from stream startup, as the vendor driver does: 1 s, 10 ms apart. */
+-#define WCN_STARTUP_LADDR_TRIES		100
+-#define WCN_STARTUP_LADDR_POLL_MS	10
++#define WCN_STARTUP_LADDR_TRIES		250
++#define WCN_STARTUP_LADDR_POLL_MS	20
+ 
+ struct wcn_bt_slim {
+ 	struct slim_device *ifd;
+ 	struct slim_device *pgd;
+ 	struct delayed_work laddr_work;
+ 	int tries;
+-	int bursts;
+ 	bool ready;
+ 	/* Holding a runtime PM reference on the SLIMBus controller. */
+ 	bool bus_held;
+@@ -345,25 +341,13 @@ static void wcn_bt_slim_laddr_work(struct work_struct *work)
+ 	struct wcn_bt_slim *wb = container_of(to_delayed_work(work),
+ 					      struct wcn_bt_slim, laddr_work);
+ 
+-	unsigned long delay;
+-
+ 	mutex_lock(&wcn_bt_lock);
+ 
+-	/* A burst starts by holding the bus up and giving the chip time to join. */
+-	if (wb->tries >= WCN_LADDR_TRIES && !wb->bus_held) {
+-		wcn_bt_slim_hold_bus(wb, true);
+-		schedule_delayed_work(&wb->laddr_work,
+-				      msecs_to_jiffies(WCN_LADDR_HOLD_MS));
+-		mutex_unlock(&wcn_bt_lock);
+-		return;
+-	}
+-
+ 	if (!wcn_bt_slim_query_laddr(wb))
+ 		goto retry;
+ 
+-	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x (quiet tries %d, bursts %d)\n",
+-		 wb->pgd->laddr, wb->ifd->laddr, min(wb->tries + 1, WCN_LADDR_TRIES), wb->bursts);
+-	wcn_bt_slim_hold_bus(wb, false);
++	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x\n",
++		 wb->pgd->laddr, wb->ifd->laddr);
+ 
+ 	if (!wcn_bt_slim_read_hw_rev(wb))
+ 		wb->ready = true;
+@@ -372,22 +356,12 @@ static void wcn_bt_slim_laddr_work(struct work_struct *work)
+ 	return;
+ 
+ retry:
+-	if (wb->tries < WCN_LADDR_TRIES) {
+-		/* quiet poll, bus left alone while Bluetooth may still be booting the chip */
+-		wb->tries++;
+-		delay = wb->tries < WCN_LADDR_TRIES ? WCN_LADDR_POLL_MS : WCN_LADDR_FIRST_BURST_MS;
+-	} else {
+-		/* end of a burst: let the bus go and try again later */
+-		wcn_bt_slim_hold_bus(wb, false);
+-		if (++wb->bursts >= WCN_LADDR_BURSTS) {
+-			dev_warn(wb->pgd ? &wb->pgd->dev : &wb->ifd->dev,
+-				 "chip never showed up on the bus\n");
+-			mutex_unlock(&wcn_bt_lock);
+-			return;
+-		}
+-		delay = WCN_LADDR_BURST_PERIOD_MS - WCN_LADDR_HOLD_MS;
+-	}
+-	schedule_delayed_work(&wb->laddr_work, msecs_to_jiffies(delay));
++	if (++wb->tries < WCN_LADDR_TRIES)
++		schedule_delayed_work(&wb->laddr_work,
++				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
++	else
++		dev_info(wb->pgd ? &wb->pgd->dev : &wb->ifd->dev,
++			 "no address at boot: looked for again when a stream starts (after an offloaded SCO)\n");
+ 
+ 	mutex_unlock(&wcn_bt_lock);
+ }
+@@ -511,9 +485,10 @@ static int wcn_bt_slim_dai_startup(struct snd_pcm_substream *substream,
+ 		return -ENODEV;
+ 
+ 	/*
+-	 * Not enumerated at boot (Bluetooth came up after the poll gave up, or
+-	 * the chip was restarted): try again with the bus held up, the way the
+-	 * vendor driver looks for the chip when a call starts.
++	 * Not enumerated yet, which is the normal case for the first call after
++	 * boot: the chip only joins once an offloaded SCO has been set up, and by
++	 * the time the stream starts it has. Look for it now with the bus held
++	 * up, as the vendor driver does at stream startup.
+ 	 */
+ 	if (!wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid ||
+ 	    !wcn_bt->pgd || !wcn_bt->pgd->is_laddr_valid) {
+@@ -536,8 +511,8 @@ static int wcn_bt_slim_dai_startup(struct snd_pcm_substream *substream,
+ 			dev_err(dai->dev, "chip not enumerated\n");
+ 			return -ENODEV;
+ 		}
+-		dev_info(dai->dev, "enumerated at stream startup: pgd laddr 0x%02x, ifd laddr 0x%02x\n",
+-			 wcn_bt->pgd->laddr, wcn_bt->ifd->laddr);
++		dev_info(dai->dev, "enumerated at stream startup after %d ms: pgd laddr 0x%02x, ifd laddr 0x%02x\n",
++			 (i - 1) * WCN_STARTUP_LADDR_POLL_MS, wcn_bt->pgd->laddr, wcn_bt->ifd->laddr);
+ 	}
+ 
+ 	/*
+@@ -750,7 +725,6 @@ static int wcn_bt_slim_probe(struct slim_device *sdev)
+ 	/* Start polling once both halves are here (bus left alone: see WCN_LADDR_*). */
+ 	if (wcn_bt->ifd && wcn_bt->pgd) {
+ 		wcn_bt->tries = 0;
+-		wcn_bt->bursts = 0;
+ 		schedule_delayed_work(&wcn_bt->laddr_work,
+ 				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
+ 	}
+-- 
+2.47.3
+

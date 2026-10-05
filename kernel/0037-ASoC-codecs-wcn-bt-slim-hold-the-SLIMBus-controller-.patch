@@ -1,0 +1,219 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 21:50:24 +0200
+Subject: [PATCH 37/37] ASoC: codecs: wcn-bt-slim: hold the SLIMBus controller
+ up while the chip has no address
+
+On the Nothing Phone (1) the WCN6750 never enumerated: every boot ended
+with "chip never showed up on the bus", although Bluetooth itself worked
+and an offloaded eSCO came up. The NGD runtime-suspends after 100 ms idle,
+and the ADSP then tears the whole bus down, so each logical address query
+from laddr_work landed milliseconds after the bus had been brought back up
+("SLIM SAT: Rcvd master capability" before every query), with no time for
+the chip to synchronise and report present. The vendor driver never polls
+a quiet bus: it looks for the chip when a stream starts, every millisecond
+with the bus up.
+
+Measured on the phone: with qcom,slim-ngd.1 power/control set to "on" for a
+few seconds, the next query found the chip (pgd laddr 0x86, ifd laddr 0x85),
+and the address survived the NGD suspending again. Until now a boot service
+did exactly that from userspace.
+
+Hold a runtime PM reference on the controller while polling, and drop it as
+soon as both devices have an address or the poll gives up, so the bus still
+suspends when idle (the reason the old always-on reference was removed).
+Poll for up to 60 s, since Bluetooth may bring the chip up late. And if a
+stream starts before the chip is enumerated, try again from startup for up
+to a second with the bus held, as the vendor driver does.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/codecs/wcn-bt-slim.c | 106 +++++++++++++++++++++++++++------
+ 1 file changed, 89 insertions(+), 17 deletions(-)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index aea884166..cbe38b040 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -27,6 +27,7 @@
+ #include <sound/soc-dai.h>
+ #include <linux/io.h>
+ #include <linux/debugfs.h>
++#include <linux/pm_runtime.h>
+ 
+ /*
+  * Registers, addressed through the interface device.
+@@ -103,8 +104,23 @@
+  */
+ #define WCN_READ_TRIES			600
+ 
+-#define WCN_LADDR_TRIES			20
++/*
++ * The chip only gets a logical address if the bus stays up long enough for it
++ * to synchronise and report present, and the NGD runtime-suspends after 100 ms
++ * idle, which makes the ADSP tear the whole bus down. Polled from a quiet bus,
++ * every query landed milliseconds after the bus had been brought back up and
++ * the WCN6750 never enumerated ("chip never showed up on the bus"). So the
++ * controller is held resumed while polling, and released as soon as the chip
++ * has an address or the poll gives up: the address survives later suspends.
++ * The vendor driver does the same in effect, polling every millisecond with
++ * the bus up. Sixty seconds, because the bus being up no longer depends on the
++ * polling and Bluetooth may bring the chip up late.
++ */
++#define WCN_LADDR_TRIES			240
+ #define WCN_LADDR_POLL_MS		250
++/* Second chance from stream startup, as the vendor driver does: 1 s, 10 ms apart. */
++#define WCN_STARTUP_LADDR_TRIES		100
++#define WCN_STARTUP_LADDR_POLL_MS	10
+ 
+ struct wcn_bt_slim {
+ 	struct slim_device *ifd;
+@@ -112,6 +128,8 @@ struct wcn_bt_slim {
+ 	struct delayed_work laddr_work;
+ 	int tries;
+ 	bool ready;
++	/* Holding a runtime PM reference on the SLIMBus controller. */
++	bool bus_held;
+ 	/* Bus channels reserved while each direction is streaming. */
+ 	struct slim_stream_runtime *rx_stream;
+ 	struct slim_stream_runtime *tx_stream;
+@@ -274,6 +292,39 @@ static int wcn_bt_slim_port_disable(struct wcn_bt_slim *wb, u8 port, bool rx)
+ 	return wcn_bt_slim_writeb_retry(wb->ifd, cfg_reg, 0);
+ }
+ 
++/* Keep the SLIMBus controller resumed, or let it go. Called with wcn_bt_lock held. */
++static void wcn_bt_slim_hold_bus(struct wcn_bt_slim *wb, bool hold)
++{
++	struct slim_device *sdev = wb->pgd ? wb->pgd : wb->ifd;
++	int ret;
++
++	if (!sdev || hold == wb->bus_held)
++		return;
++
++	if (hold) {
++		ret = pm_runtime_resume_and_get(sdev->dev.parent);
++		if (ret) {
++			dev_warn(&sdev->dev, "cannot hold the bus up: %d\n", ret);
++			return;
++		}
++	} else {
++		pm_runtime_put(sdev->dev.parent);
++	}
++	wb->bus_held = hold;
++}
++
++/* Both halves have an address. Called with wcn_bt_lock held. */
++static bool wcn_bt_slim_query_laddr(struct wcn_bt_slim *wb)
++{
++	if (!wb->ifd || !wb->pgd)
++		return false;
++	if (!wb->ifd->is_laddr_valid && slim_get_logical_addr(wb->ifd))
++		return false;
++	if (!wb->pgd->is_laddr_valid && slim_get_logical_addr(wb->pgd))
++		return false;
++	return true;
++}
++
+ /*
+  * Both devices have to be enumerated before anything can be said to the chip:
+  * the PGD owns the ports, the IFD carries the register traffic.
+@@ -282,23 +333,15 @@ static void wcn_bt_slim_laddr_work(struct work_struct *work)
+ {
+ 	struct wcn_bt_slim *wb = container_of(to_delayed_work(work),
+ 					      struct wcn_bt_slim, laddr_work);
+-	int ret;
+ 
+ 	mutex_lock(&wcn_bt_lock);
+ 
+-	if (!wb->ifd || !wb->pgd)
++	if (!wcn_bt_slim_query_laddr(wb))
+ 		goto retry;
+ 
+-	ret = slim_get_logical_addr(wb->ifd);
+-	if (ret)
+-		goto retry;
+-
+-	ret = slim_get_logical_addr(wb->pgd);
+-	if (ret)
+-		goto retry;
+-
+-	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x\n",
+-		 wb->pgd->laddr, wb->ifd->laddr);
++	dev_info(&wb->pgd->dev, "enumerated: pgd laddr 0x%02x, ifd laddr 0x%02x (after %d tries)\n",
++		 wb->pgd->laddr, wb->ifd->laddr, wb->tries + 1);
++	wcn_bt_slim_hold_bus(wb, false);
+ 
+ 	if (!wcn_bt_slim_read_hw_rev(wb))
+ 		wb->ready = true;
+@@ -311,6 +354,7 @@ static void wcn_bt_slim_laddr_work(struct work_struct *work)
+ 		schedule_delayed_work(&wb->laddr_work,
+ 				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
+ 	} else {
++		wcn_bt_slim_hold_bus(wb, false);
+ 		dev_warn(wb->pgd ? &wb->pgd->dev : &wb->ifd->dev,
+ 			 "chip never showed up on the bus\n");
+ 	}
+@@ -431,11 +475,37 @@ static void wcn_bt_slim_stream_stop(struct snd_pcm_substream *substream)
+ static int wcn_bt_slim_dai_startup(struct snd_pcm_substream *substream,
+ 				   struct snd_soc_dai *dai)
+ {
+-	int ret, val;
++	int ret, val, i;
+ 
+-	if (!wcn_bt || !wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid) {
+-		dev_err(dai->dev, "chip not enumerated\n");
++	if (!wcn_bt)
+ 		return -ENODEV;
++
++	/*
++	 * Not enumerated at boot (Bluetooth came up after the poll gave up, or
++	 * the chip was restarted): try again with the bus held up, the way the
++	 * vendor driver looks for the chip when a call starts.
++	 */
++	if (!wcn_bt->ifd || !wcn_bt->ifd->is_laddr_valid ||
++	    !wcn_bt->pgd || !wcn_bt->pgd->is_laddr_valid) {
++		bool found = false;
++
++		mutex_lock(&wcn_bt_lock);
++		wcn_bt_slim_hold_bus(wcn_bt, true);
++		for (i = 0; i < WCN_STARTUP_LADDR_TRIES && !found; i++) {
++			found = wcn_bt_slim_query_laddr(wcn_bt);
++			if (!found)
++				msleep(WCN_STARTUP_LADDR_POLL_MS);
++		}
++		if (!delayed_work_pending(&wcn_bt->laddr_work))
++			wcn_bt_slim_hold_bus(wcn_bt, false);
++		mutex_unlock(&wcn_bt_lock);
++
++		if (!found) {
++			dev_err(dai->dev, "chip not enumerated\n");
++			return -ENODEV;
++		}
++		dev_info(dai->dev, "enumerated at stream startup: pgd laddr 0x%02x, ifd laddr 0x%02x\n",
++			 wcn_bt->pgd->laddr, wcn_bt->ifd->laddr);
+ 	}
+ 
+ 	/*
+@@ -645,9 +715,10 @@ static int wcn_bt_slim_probe(struct slim_device *sdev)
+ 			dev_err(&sdev->dev, "cannot register codec: %d\n", cret);
+ 	}
+ 
+-	/* Start polling once both halves are here. */
++	/* Start polling, with the bus held up, once both halves are here. */
+ 	if (wcn_bt->ifd && wcn_bt->pgd) {
+ 		wcn_bt->tries = 0;
++		wcn_bt_slim_hold_bus(wcn_bt, true);
+ 		schedule_delayed_work(&wcn_bt->laddr_work,
+ 				      msecs_to_jiffies(WCN_LADDR_POLL_MS));
+ 	}
+@@ -662,6 +733,7 @@ static void wcn_bt_slim_remove(struct slim_device *sdev)
+ 	cancel_delayed_work_sync(&wcn_bt->laddr_work);
+ 
+ 	mutex_lock(&wcn_bt_lock);
++	wcn_bt_slim_hold_bus(wcn_bt, false);
+ 	if (wcn_bt->ifd == sdev)
+ 		wcn_bt->ifd = NULL;
+ 	if (wcn_bt->pgd == sdev)
+-- 
+2.47.3
+

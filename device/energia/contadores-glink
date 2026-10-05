@@ -1,0 +1,169 @@
+#!/bin/sh
+# /usr/local/sbin/contadores-glink — spacewar (2026-09-15)
+#
+# POR QUÉ: el 2026-09-15, de 12:42 a 14:38, el ADSP mandó ~200 mensajes glink por segundo sin parar: cada suspensión
+# volvía al instante y la tercera cayó a s2idle y colgó el móvil. /proc/interrupts no dice qué canal era (el ADSP usa
+# UNA interrupción, ipcc 196608, para QRTR, APR de audio, FastRPC y pmic_glink) y no se reprodujo a la primera (empezó
+# tras una llamada que terminó en mitad de un paso al casco fallido). Con estas sondas el gancho de sueño anota en cada
+# despertar cuántos mensajes llegaron por cada canal, y si hay avalancha pide el detalle: la próxima vez queda en el
+# diario sin hacer pruebas.
+#
+# QUÉ HACE: sondas del kernel (kprobes) en la función que recibe cada canal, habilitadas en una instancia de trazas
+# propia (instances/glink-permanente) con la grabación apagada: solo suben su contador en
+# /sys/kernel/tracing/kprobe_profile (una excepción de sonda por mensaje; en reposo 0-2 por segundo). No tocan la
+# traza global ni las sondas de las pruebas (pruebas/energia/contadores-glink.sh usa otros nombres).
+#
+#   armar     crea y habilita las sondas (contadores-glink.service, al arrancar)
+#   desarmar  las quita
+#   leer      «qrtr=N apr=N fastrpc=N pmic=N», acumulados desde armar (el gancho resta antes y después de dormir)
+#   detalle   graba 3 s con cabeceras (QRTR nodo:puerto, APR servicio/opcode, FastRPC canal, pmic_glink owner/opcode) y
+#             lo escribe en el diario con la etiqueta «despertar» (el gancho lo lanza si llegan más de 500 mensajes)
+#   qrtr-limpiar / qrtr-leer  (2026-09-15 21:20) QUÉ MENSAJE DESPIERTA: «armar» deja además grabando SIEMPRE, en su propia
+#             instancia (instances/despertar-qrtr, reloj boot, búfer circular de 512 KB), la cabecera QRTR y el
+#             mensaje QMI de cada paquete que entra (qrtr_endpoint_post) y power:suspend_resume. El gancho limpia el
+#             búfer antes de dormir y, al volver, «qrtr-leer» da los primeros paquetes de datos tras machine_suspend:
+#             «nodo:puerto→nodo:puerto qmi tipo/msg» (nodo 0 = módem, 5 = ADSP, 1 = local; tipo 0 petición, 2 respuesta,
+#             4 indicación). Así cada despertar del módem sale identificado en el diario sin lanzar trazas a mano.
+#
+# Leer: journalctl -t despertar | grep glink
+set -u
+T=/sys/kernel/tracing
+I=$T/instances/glink-permanente
+CANALES="qrtr:qcom_smd_qrtr_callback apr:apr_callback fastrpc:fastrpc_rpmsg_callback pmic:pmic_glink_rpmsg_callback"
+BLOQUEO=/run/contadores-glink.detalle
+Q=$T/instances/despertar-qrtr
+# cabeceras: QRTR v1 en x1 de qrtr_endpoint_post; apr_hdr en x1 de apr_callback (servicio +4, puerto +6, opcode +16);
+# pmic_glink_hdr (owner, type, opcode) en x1; en FastRPC el primer argumento distingue el canal (ADSP o CDSP)
+DETALLE="p:cgpd_qrtr qrtr_endpoint_post tipo=+4(%x1):u32 src_nodo=+8(%x1):u32 src_puerto=+12(%x1):u32 dst_puerto=+28(%x1):u32
+p:cgpd_apr apr_callback svc=+4(%x1):u8 puerto=+6(%x1):u16 opcode=+16(%x1):x32
+p:cgpd_fastrpc fastrpc_rpmsg_callback canal=%x0
+p:cgpd_pmic pmic_glink_rpmsg_callback owner=+0(%x1):u32 tipo=+4(%x1):u32 opcode=+8(%x1):x32"
+
+hay_simbolo() { grep -qE " $1([[:space:]]|\$)" /proc/kallsyms; }
+
+armar() {
+	[ -d $T/events ] || mount -t tracefs nodev $T || exit 1
+	mkdir -p $I && echo 0 > $I/tracing_on && echo 256 > $I/buffer_size_kb || exit 1
+	armadas=""; faltan=""
+	for c in $CANALES; do
+		n=${c%%:*}; f=${c#*:}
+		# FastRPC y pmic_glink son módulos: esperar hasta 30 s a que carguen
+		i=0; while ! hay_simbolo "$f" && [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done
+		if ! hay_simbolo "$f"; then faltan="$faltan $n"; continue; fi
+		{
+			[ -d $T/events/kprobes/cgp_$n ] || echo "p:cgp_$n $f" >> $T/kprobe_events
+			echo 1 > $I/events/kprobes/cgp_$n/enable
+		} 2>/dev/null && armadas="$armadas $n" || faltan="$faltan $n"
+	done
+	# qué mensaje despierta: grabación continua de las cabeceras QRTR/QMI en su instancia
+	qrtr="no"
+	if hay_simbolo qrtr_endpoint_post && mkdir -p $Q; then
+		{
+			echo 0 > $Q/tracing_on
+			echo boot > $Q/trace_clock
+			echo 512 > $Q/buffer_size_kb
+			[ -d $T/events/kprobes/cgpq_qrtr ] || echo "p:cgpq_qrtr qrtr_endpoint_post tipo=+4(%x1):u32 src_nodo=+8(%x1):u32 src_puerto=+12(%x1):u32 dst_nodo=+24(%x1):u32 dst_puerto=+28(%x1):u32 qmi_tipo=+32(%x1):u8 qmi_msg=+35(%x1):x16" >> $T/kprobe_events
+			echo 1 > $Q/events/kprobes/cgpq_qrtr/enable
+			echo 1 > $Q/events/power/suspend_resume/enable
+			echo 1 > $Q/tracing_on
+		} 2>/dev/null && qrtr="sí"
+	fi
+	logger -t contadores-glink "armadas:${armadas:- ninguna}${faltan:+; sin armar:$faltan}; grabación QRTR al despertar: $qrtr"
+}
+
+qrtr_limpiar() {
+	[ -d $Q ] && echo > $Q/trace 2>/dev/null
+	return 0
+}
+
+# «nodo:puerto→nodo:puerto qmi tipo/msg; …» de los primeros paquetes de datos QRTR tras el último machine_suspend
+qrtr_leer() {
+	[ -d $Q ] || return 0
+	awk '
+		function f(s, k) { return match(s, " " k "=[^ ]+") ? substr(s, RSTART + length(k) + 2, RLENGTH - length(k) - 2) : "?" }
+		/suspend_resume: machine_suspend/ { u = NR }
+		{ l[NR] = $0 }
+		END {
+			if (!u) exit
+			n = 0; r = ""
+			for (i = u + 1; i <= NR && n < 4; i++) {
+				if (l[i] !~ /cgpq_qrtr:/ || f(l[i], "tipo") != "1") continue
+				r = r (n ? "; " : "") f(l[i], "src_nodo") ":" f(l[i], "src_puerto") "→" f(l[i], "dst_nodo") ":" f(l[i], "dst_puerto") " qmi " f(l[i], "qmi_tipo") "/" f(l[i], "qmi_msg")
+				n++
+			}
+			if (n) print r
+		}' $Q/trace 2>/dev/null
+}
+
+quitar_detalle() {
+	for e in cgpd_qrtr cgpd_apr cgpd_fastrpc cgpd_pmic; do
+		echo 0 > $I/events/kprobes/$e/enable
+		echo "-:$e" >> $T/kprobe_events
+	done 2>/dev/null
+}
+
+desarmar() {
+	{
+		echo 0 > $I/tracing_on
+		quitar_detalle
+		for c in $CANALES; do
+			n=${c%%:*}
+			echo 0 > $I/events/kprobes/cgp_$n/enable
+			echo "-:cgp_$n" >> $T/kprobe_events
+		done
+		rmdir $I
+		echo 0 > $Q/tracing_on
+		echo 0 > $Q/events/kprobes/cgpq_qrtr/enable
+		echo 0 > $Q/events/power/suspend_resume/enable
+		echo "-:cgpq_qrtr" >> $T/kprobe_events
+		rmdir $Q
+	} 2>/dev/null
+	return 0
+}
+
+leer() {
+	awk '$1 ~ /^cgp_/ { n = $1; sub(/^cgp_/, "", n); printf "%s%s=%s", s, n, $2; s = " " } END { print "" }' \
+		$T/kprobe_profile 2>/dev/null
+}
+
+# «N× campo=valor …;» de los 5 valores más repetidos de un evento del detalle
+resumen() {
+	grep " $1: " $I/trace | awk -v campos="$2" '{
+		k = ""; n = split(campos, c, " ")
+		for (j = 1; j <= n; j++) for (i = 1; i <= NF; i++) if (index($i, c[j] "=") == 1) k = k " " $i
+		print k }' | sort | uniq -c | sort -rn | head -5 | awk '{ $1 = $1 "×"; print }' | tr '\n' ';'
+}
+
+detalle() {
+	[ -d $I ] || { logger -t despertar "glink detalle: las sondas no están armadas"; return 0; }
+	mkdir $BLOQUEO 2>/dev/null || return 0
+	quitar_detalle
+	echo "$DETALLE" | while read -r p; do
+		e=${p%% *}; e=${e#p:}
+		{ echo "$p" >> $T/kprobe_events && echo 1 > $I/events/kprobes/$e/enable; } 2>/dev/null
+	done
+	echo > $I/trace
+	echo 1 > $I/tracing_on
+	sleep 3
+	echo 0 > $I/tracing_on
+	for par in "cgpd_qrtr:QRTR:src_nodo src_puerto dst_puerto tipo" "cgpd_apr:APR:svc puerto opcode" \
+		"cgpd_fastrpc:FastRPC:canal" "cgpd_pmic:pmic_glink:owner tipo opcode"; do
+		e=${par%%:*}; resto=${par#*:}; nombre=${resto%%:*}; campos=${resto#*:}
+		total=$(grep -c " $e: " $I/trace)
+		[ "$total" -gt 0 ] && logger -t despertar -p user.info "glink detalle 3 s, $nombre: $total mensajes: $(resumen "$e" "$campos")"
+	done
+	logger -t despertar -p user.info "glink detalle 3 s hecho"
+	quitar_detalle
+	echo > $I/trace
+	rmdir $BLOQUEO
+}
+
+case "${1:-}" in
+	armar) armar ;;
+	desarmar) desarmar ;;
+	leer) leer ;;
+	detalle) detalle ;;
+	qrtr-limpiar) qrtr_limpiar ;;
+	qrtr-leer) qrtr_leer ;;
+	*) echo "uso: $0 armar|desarmar|leer|detalle|qrtr-limpiar|qrtr-leer" >&2; exit 2 ;;
+esac

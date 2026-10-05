@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 20:28:33 +0200
+Subject: [PATCH] ASoC: codecs: tfa9872: expose the amplifier gain as a volume
+ control
+
+The TFA987x has no digital volume. Expose AMPGAIN (register 0x52, bits 12:5) so userspace can set
+the level, in particular for voice calls, whose audio goes from the modem to the DSP and out to the
+amplifier without ever reaching the CPU. With sound-name-prefix the controls are "Earpiece Amp Gain
+Volume" and "Speaker Amp Gain Volume".
+---
+ sound/soc/codecs/tfa9872.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/sound/soc/codecs/tfa9872.c b/sound/soc/codecs/tfa9872.c
+index d20218243..7c1c6fb41 100644
+--- a/sound/soc/codecs/tfa9872.c
++++ b/sound/soc/codecs/tfa9872.c
+@@ -118,11 +118,22 @@ static const struct snd_soc_dapm_route tfa987x_dapm_routes[] = {
+ 	{"Speaker", NULL, "Output"},
+ };
+ 
++/*
++ * The amplifier gain (AMPGAIN, register 0x52 bits 12:5; 190 after reset on the TFA9873 of the Nothing
++ * Phone (1)). There is no digital volume in this chip, and a voice call never crosses the CPU, so this
++ * is the only place where a call can be made quieter or louder. No dB table is known: raw steps.
++ */
++static const struct snd_kcontrol_new tfa987x_snd_controls[] = {
++	SOC_SINGLE("Amp Gain Volume", TFA987X_AMP_CFG, 5, 0xff, 0),
++};
++
+ static const struct snd_soc_component_driver tfa987x_component = {
+ 	.dapm_widgets		= tfa987x_dapm_widgets,
+ 	.num_dapm_widgets	= ARRAY_SIZE(tfa987x_dapm_widgets),
+ 	.dapm_routes		= tfa987x_dapm_routes,
+ 	.num_dapm_routes	= ARRAY_SIZE(tfa987x_dapm_routes),
++	.controls		= tfa987x_snd_controls,
++	.num_controls		= ARRAY_SIZE(tfa987x_snd_controls),
+ 	.idle_bias_on		= 1,
+ 	.use_pmdown_time	= 1,
+ 	.endianness		= 1,
+-- 
+2.47.3
+

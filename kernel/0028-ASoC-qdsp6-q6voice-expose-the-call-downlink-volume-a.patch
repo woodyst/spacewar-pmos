@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 14:24:04 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: expose the call downlink volume as a
+ mixer control
+
+Add "Voice Rx Playback Volume", the vocproc Rx volume step (VSS_IVOLUME_CMD_SET_STEP), applied to a
+call in progress and kept for the next one. The call audio never reaches the CPU and the TFA9873
+amplifiers of the Nothing Phone (1) have no usable digital gain, so this is the only call volume; with
+a calibrated vocproc the DSP resolves the step against the Rx volume table. The name ends in "Playback
+Volume" so a UCM profile can hand it to PipeWire as the sink volume.
+---
+ sound/soc/qcom/qdsp6/q6voice-dai.c | 30 +++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6voice.c     | 39 ++++++++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6voice.h     |  2 ++
+ 3 files changed, 71 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice-dai.c b/sound/soc/qcom/qdsp6/q6voice-dai.c
+index be1a9a12f..06feae34d 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-dai.c
++++ b/sound/soc/qcom/qdsp6/q6voice-dai.c
+@@ -344,7 +344,37 @@ static int q6voice_cal_put(struct snd_kcontrol *kcontrol,
+ 	return q6voice_set_cal_set(q6voice_cal_sets[i]);
+ }
+ 
++/*
++ * "Voice Rx Playback Volume": the call's downlink volume step in the DSP. Named "... Playback Volume" so that
++ * alsa-lib files it as a playback volume and a UCM profile can hand it to PipeWire (PlaybackVolume) for the
++ * call volume slider. The usable range depends on the Rx volume table of the calibration.
++ */
++#define Q6VOICE_RX_VOLUME_MAX	15
++
++static int q6voice_rx_volume_get(struct snd_kcontrol *kcontrol,
++				 struct snd_ctl_elem_value *ucontrol)
++{
++	ucontrol->value.integer.value[0] = q6voice_get_rx_volume();
++	return 0;
++}
++
++static int q6voice_rx_volume_put(struct snd_kcontrol *kcontrol,
++				 struct snd_ctl_elem_value *ucontrol)
++{
++	long step = ucontrol->value.integer.value[0];
++
++	if (step < 0 || step > Q6VOICE_RX_VOLUME_MAX)
++		return -EINVAL;
++	if ((unsigned int)step == q6voice_get_rx_volume())
++		return 0;
++
++	q6voice_set_rx_volume(step);
++	return 1;
++}
++
+ static const struct snd_kcontrol_new q6voice_controls[] = {
++	SOC_SINGLE_EXT("Voice Rx Playback Volume", 0, 0, Q6VOICE_RX_VOLUME_MAX, 0,
++		       q6voice_rx_volume_get, q6voice_rx_volume_put),
+ 	SOC_SINGLE_BOOL_EXT("Voice Tx Capture Switch", 0,
+ 			    q6voice_tx_switch_get, q6voice_tx_switch_put),
+ 	SOC_ENUM_EXT("Voice Calibration", q6voice_cal_enum,
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index af17666cd..63ac901cb 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -254,6 +254,45 @@ int q6voice_set_tx_mute(bool mute)
+ }
+ EXPORT_SYMBOL_GPL(q6voice_set_tx_mute);
+ 
++/*
++ * Downlink volume: the vocproc Rx volume step (VSS_IVOLUME_CMD_SET_STEP). The DSP resolves the step against
++ * the Rx volume table of the calibration set in use, so it only takes effect with a calibrated vocproc; it
++ * is kept for the next call and, during a call, applied at once. This is the call volume: the audio never
++ * reaches the CPU, and on phones whose amplifiers have no usable digital gain (the TFA9873 of the Nothing
++ * Phone (1)) it is the only one there is.
++ */
++int q6voice_set_rx_volume(unsigned int step)
++{
++	struct q6voice *v = q6voice_live;
++	struct q6voice_path *p;
++	int ret = 0, i;
++
++	rx_volume_step = step;
++	if (!v)
++		return 0;
++
++	for (i = 0; i < Q6VOICE_PATH_COUNT; i++) {
++		p = &v->paths[i];
++		mutex_lock(&p->lock);
++		if (p->runtime && p->runtime->started == 3 &&
++		    p->runtime->sessions[Q6VOICE_SERVICE_CVP]) {
++			ret = q6cvp_set_rx_volume(p->runtime->sessions[Q6VOICE_SERVICE_CVP], step);
++			if (ret)
++				dev_info(v->dev, "rx volume step %u not applied: %d\n", step, ret);
++		}
++		mutex_unlock(&p->lock);
++	}
++
++	return ret;
++}
++EXPORT_SYMBOL_GPL(q6voice_set_rx_volume);
++
++unsigned int q6voice_get_rx_volume(void)
++{
++	return rx_volume_step;
++}
++EXPORT_SYMBOL_GPL(q6voice_get_rx_volume);
++
+ bool q6voice_get_tx_mute(void)
+ {
+ 	return q6voice_tx_muted;
+diff --git a/sound/soc/qcom/qdsp6/q6voice.h b/sound/soc/qcom/qdsp6/q6voice.h
+index bb624c945..d7d6bb0b1 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.h
++++ b/sound/soc/qcom/qdsp6/q6voice.h
+@@ -26,6 +26,8 @@ int q6voice_set_tx_mute(bool mute);
+ int q6voice_set_cal_set(const char *set);
+ const char *q6voice_get_cal_set(void);
+ bool q6voice_get_tx_mute(void);
++int q6voice_set_rx_volume(unsigned int step);
++unsigned int q6voice_get_rx_volume(void);
+ int q6voice_get_port(struct q6voice *v, enum q6voice_path_type path,
+ 		     bool capture);
+ void q6voice_set_port(struct q6voice *v, enum q6voice_path_type path,
+-- 
+2.47.3
+

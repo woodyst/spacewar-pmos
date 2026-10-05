@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 20:00:39 +0200
+Subject: [PATCH 20/20] Bluetooth: hci_qca: allow the SLIMbus HFP offload on
+ WCN6750 too
+
+The Nothing Phone (1) carries SCO over SLIMbus to the DSP like surya's WCN3990 (the stock firmware
+routes Bluetooth calls through SLIMBUS_7). Let the hfp_offload parameter enable it there as well; it
+stays off by default.
+---
+ drivers/bluetooth/hci_qca.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index ce4e3c38c..bdfa298cc 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -2630,7 +2630,8 @@ static int qca_serdev_probe(struct serdev_device *serdev)
+ 			hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_STATES);
+ 
+ 		if ((data->capabilities & QCA_CAP_HFP_HW_OFFLOAD) ||
+-		    (hfp_offload && data->soc_type == QCA_WCN3990))
++		    (hfp_offload && (data->soc_type == QCA_WCN3990 ||
++				     data->soc_type == QCA_WCN6750)))
+ 			qcadev->support_hfp_hw_offload = true;
+ 	}
+ 
+-- 
+2.47.3
+

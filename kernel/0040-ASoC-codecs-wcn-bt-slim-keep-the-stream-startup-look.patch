@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 22:39:34 +0200
+Subject: [PATCH] ASoC: codecs: wcn-bt-slim: keep the stream startup look for
+ the chip short
+
+With the offloaded SCO up the WCN6750 answers the first query ("enumerated
+at stream startup after 0 ms"), so waiting in startup only matters when the
+SCO is not there yet, and then it does not help. It happens at the start of
+a call: the session manager puts the card on the Bluetooth ports before the
+call supervisor has brought the SCO up. Waiting 5 s there, once for each
+direction, held the card long enough for every pactl the supervisor ran to
+time out, and it gave up on its first attempt (measured on the Nothing Phone
+(1) with kernel r123).
+
+Look for 500 ms and fail fast. The supervisor then brings the SCO up and
+moves the card to the headset again, and that start finds the chip.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/codecs/wcn-bt-slim.c | 17 ++++++++++++-----
+ 1 file changed, 12 insertions(+), 5 deletions(-)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index 494e975b8..1fab6109d 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -119,14 +119,21 @@
+  * later suspends.
+  *
+  * So at boot only a short quiet poll, as before, in case the chip is already
+- * there. The real look happens when a stream starts - the SCO is up by then -
+- * with the controller held, for up to WCN_STARTUP_LADDR_TRIES *
+- * WCN_STARTUP_LADDR_POLL_MS, which is also where the vendor driver looks for
+- * the chip.
++ * there. The real look happens when a stream starts, with the controller held,
++ * which is also where the vendor driver looks for the chip.
++ *
++ * Kept short, and failing fast. With the offloaded SCO up the chip answers at
++ * once ("enumerated at stream startup after 0 ms"). Without it, waiting does
++ * not help, and it hurts: at the start of a call the session manager can put
++ * the card on the Bluetooth ports before the SCO exists, and a 5 s wait here,
++ * once per direction, held the card long enough for every pactl in the call
++ * supervisor to time out (measured 2026-09-13, kernel r123). Failing fast
++ * lets the supervisor bring the SCO up and put the card on the headset again,
++ * and that second start finds the chip.
+  */
+ #define WCN_LADDR_TRIES			20
+ #define WCN_LADDR_POLL_MS		250
+-#define WCN_STARTUP_LADDR_TRIES		250
++#define WCN_STARTUP_LADDR_TRIES		25
+ #define WCN_STARTUP_LADDR_POLL_MS	20
+ 
+ struct wcn_bt_slim {
+-- 
+2.47.3
+

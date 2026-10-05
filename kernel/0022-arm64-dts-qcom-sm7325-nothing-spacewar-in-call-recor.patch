@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 20:41:03 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: in-call record and
+ far-end links
+
+Add the codec-less backends for the DSP voice record pseudo-ports (downlink, uplink) and the
+far-end playback port, as on surya. With them the VOC_REC_DL/VOC_REC_UL routes of a front end can
+be opened, so a call can be checked from the phone itself: until now the capture failed with
+EINVAL for lack of a backend.
+---
+ .../boot/dts/qcom/sm7325-nothing-spacewar.dts | 44 +++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index 533e3a5a2..5f148d3ec 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1593,6 +1593,50 @@ platform {
+ 	 * other, as the stock firmware does. A CS voice call never crosses the CPU, so a headset can
+ 	 * only get it this way. Backend links: they add no PCM and do not shift the numbering.
+ 	 */
++	/*
++	 * The DSP copy of a phone call, as on surya: backends with no codec, whose far side is inside
++	 * the DSP. VOC_REC_DL / VOC_REC_UL in q6routing record the downlink / uplink onto a front end,
++	 * so a call can be checked or recorded although its audio never crosses the CPU.
++	 */
++	voice-rec-dl-dai-link {
++		link-name = "Voice Downlink Capture";
++		qcom,dpcm-backend;
++
++		cpu {
++			sound-dai = <&q6afedai VOICE_RECORD_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++	};
++
++	voice-rec-ul-dai-link {
++		link-name = "Voice Uplink Capture";
++		qcom,dpcm-backend;
++
++		cpu {
++			sound-dai = <&q6afedai VOICE_RECORD_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++	};
++
++	voice-farend-dai-link {
++		link-name = "Voice Farend Playback";
++		qcom,dpcm-backend;
++
++		cpu {
++			sound-dai = <&q6afedai VOICE_PLAYBACK_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++	};
++
+ 	slim7-rx-dai-link {
+ 		link-name = "SLIMBUS_7 Playback";
+ 
+-- 
+2.47.3
+

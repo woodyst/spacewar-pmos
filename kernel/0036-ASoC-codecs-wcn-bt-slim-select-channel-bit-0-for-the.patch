@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 21:48:37 +0200
+Subject: [PATCH 36/37] ASoC: codecs: wcn-bt-slim: select channel bit 0 for the
+ TX port in the sco parameter
+
+The manual "sco" parameter still enabled the SCO transmit port with bit 1
+in its channel select register, the very mistake dai_startup() had already
+fixed: the vendor driver writes 1 << port, and the transmit port is port 0.
+Writing bit 1 points the port at a channel nothing carries and the capture
+comes back as exact digital silence.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/codecs/wcn-bt-slim.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index be0fec7b1..aea884166 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -699,9 +699,10 @@ static int wcn_bt_slim_sco_set(const char *val, const struct kernel_param *kp)
+ 
+ 	if (on) {
+ 		ret = wcn_bt_slim_port_enable(wcn_bt, WCN_PGD_PORT_RX_SCO, true, 0);
++		/* bit 0 for the transmit port, as in dai_startup() */
+ 		if (!ret)
+ 			ret = wcn_bt_slim_port_enable(wcn_bt, WCN_PGD_PORT_TX_SCO,
+-						      false, 1);
++						      false, 0);
+ 	} else {
+ 		wcn_bt_slim_port_disable(wcn_bt, WCN_PGD_PORT_RX_SCO, true);
+ 		ret = wcn_bt_slim_port_disable(wcn_bt, WCN_PGD_PORT_TX_SCO, false);
+-- 
+2.47.3
+

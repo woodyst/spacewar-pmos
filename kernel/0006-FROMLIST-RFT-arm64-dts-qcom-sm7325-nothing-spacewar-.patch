@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Danila Tikhonov <danila@mainlining.org>
+Date: Sat, 1 Aug 2026 18:47:15 +0300
+Subject: [PATCH] FROMLIST RFT: arm64: dts: qcom: sm7325-nothing-spacewar: Add
+ UW camera actuator
+
+Add a node for the Dongwoon DW9800W actuator, used for focus of the
+ultra-wide camera sensor.
+
+Signed-off-by: Danila Tikhonov <danila@mainlining.org>
+---
+ arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index a8032e3772b7..614996573665 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -877,7 +877,13 @@
+ };
+ 
+ &cci1_i2c0 {
+-	/* actuator (For Ultra Wide sensor) @ 0xc */
++	camu_dw9800w: actuator@c {
++		compatible = "dongwoon,dw9800w";
++		reg = <0x0c>;
++		vdd-supply = <&vreg_camu_vaf_1p8>;
++
++		dongwoon,vcm-prescale = <122>;
++	};
+ 
+ 	camu_s5kjn1: camera@2d {
+ 		compatible = "samsung,s5kjn1";
+@@ -898,6 +904,8 @@
+ 		orientation = <1>; /* Rear facing */
+ 		rotation = <90>;
+ 
++		lens-focus = <&camu_dw9800w>;
++
+ 		port {
+ 			camera_s5kjn1_ep: endpoint {
+ 				data-lanes = <1 2 3 4>;
+-- 
+2.47.3
+

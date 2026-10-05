@@ -1,0 +1,508 @@
+diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.c.in phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.c.in
+--- a/plugins/mandato-quick-setting/mandato-quick-setting.c.in
++++ b/plugins/mandato-quick-setting/mandato-quick-setting.c.in
+@@ -0,0 +1,387 @@
++/*
++ * Complemento genérico de ajustes rápidos: un botón que ejecuta mandatos.
++ *
++ * Copyright (C) 2026 spacewar (Nothing Phone 1) — postmarketOS
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ *
++ * Este fichero es una PLANTILLA: meson lo compila una vez por ranura (@N@), de modo que cada ranura
++ * registra un tipo de GObject con nombre propio. Dos ranuras con el mismo nombre de tipo chocarían en el
++ * mismo proceso, y phosh carga todos los complementos en el suyo.
++ *
++ * Qué lee de los ajustes (esquema reubicable mobi.phosh.plugins.mandato, ruta /mobi/phosh/plugins/mandato/@N@/):
++ *   titulo         texto por omisión bajo el icono
++ *   icono          icono cuando está encendido
++ *   icono-apagado  icono cuando está apagado (vacío = el mismo)
++ *   encender       mandato al pulsar estando apagado
++ *   apagar         mandato al pulsar estando encendido
++ *   estado         mandato que dice si está encendido: salida 0 = encendido
++ *                  su PRIMERA línea se muestra bajo el icono; el RESTO, en la página de detalle (pulsación larga)
++ *   intervalo      cada cuántos segundos se recomprueba MIENTRAS el panel está visible (0 = no recomprobar)
++ *   espera         segundos tras los que se deja de esperar a encender/apagar (para mandatos que no terminan)
++ *
++ * Los mandatos corren con /bin/sh -c, en la sesión del usuario, y son HIJOS DE PHOSH: si phosh se reinicia,
++ * un mandato que siga vivo muere con él. Para algo que deba sobrevivir, usar systemd (systemctl, systemd-run).
++ */
++
++#include "phosh-plugin.h"
++#include "quick-setting.h"
++#include "status-icon.h"
++#include "status-page.h"
++
++/* ⚠️ libphosh NO exporta todos los símbolos de sus cabeceras: `phosh_status_page_placeholder_new`,
++ * `..._set_extra_widget` y `phosh_quick_setting_set_status_icon` NO están en la biblioteca, así que un complemento
++ * que los llame NO SE PUEDE CARGAR y phosh solo dice «Custom quick setting 'X' not found» (pasó el 01-10; los
++ * complementos de serie no se enteran porque crean esos objetos desde su plantilla .ui, no por símbolo).
++ * Aquí: la página de detalle se monta con widgets GTK normales y el icono se pone por PROPIEDAD («status-icon»),
++ * que se resuelve por nombre en tiempo de ejecución y no necesita símbolo. El paso de comprobación de
++ * scripts/96-botones-mandato.sh verifica esto tras compilar.
++ */
++
++/* glib/gi18n.h aborta la compilación si no hay GETTEXT_PACKAGE; no depender de que lo traiga otro */
++#ifndef GETTEXT_PACKAGE
++#define GETTEXT_PACKAGE "phosh"
++#endif
++#include <glib/gi18n.h>
++
++#define ESQUEMA "mobi.phosh.plugins.mandato"
++#define RUTA    "/mobi/phosh/plugins/mandato/@N@/"
++
++#define PHOSH_TYPE_MANDATO@N@_QUICK_SETTING phosh_mandato@N@_quick_setting_get_type ()
++
++G_DECLARE_FINAL_TYPE (PhoshMandato@N@QuickSetting,
++                      phosh_mandato@N@_quick_setting,
++                      PHOSH, MANDATO@N@_QUICK_SETTING, PhoshQuickSetting)
++
++struct _PhoshMandato@N@QuickSetting {
++  PhoshQuickSetting  parent;
++
++  PhoshStatusIcon   *icono;
++  GtkLabel          *detalle;
++  GSettings         *ajustes;
++  GCancellable      *cancelable;     /* corta el mandato de estado anterior si aún no ha contestado */
++  guint              vigia;          /* recomprobación periódica, solo con el panel visible */
++  guint              plazo;          /* corta el estado «cambiando» si el mandato no termina */
++  gboolean           cambiando;
++  gboolean           activo;
++};
++
++G_DEFINE_TYPE (PhoshMandato@N@QuickSetting, phosh_mandato@N@_quick_setting, PHOSH_TYPE_QUICK_SETTING)
++
++static void comprobar_estado (PhoshMandato@N@QuickSetting *self);
++
++
++static void
++pintar (PhoshMandato@N@QuickSetting *self, const char *texto)
++{
++  g_autofree char *titulo = g_settings_get_string (self->ajustes, "titulo");
++  g_autofree char *icono_on = g_settings_get_string (self->ajustes, "icono");
++  g_autofree char *icono_off = g_settings_get_string (self->ajustes, "icono-apagado");
++  const char *icono;
++
++  if (self->activo || icono_off[0] == '\0')
++    icono = icono_on[0] ? icono_on : "utilities-terminal-symbolic";
++  else
++    icono = icono_off;
++
++  phosh_status_icon_set_icon_name (self->icono, icono);
++  phosh_status_icon_set_info (self->icono, (texto && texto[0]) ? texto : titulo);
++  phosh_quick_setting_set_active (PHOSH_QUICK_SETTING (self), self->activo);
++  /* mientras un mandato está en marcha el botón no acepta otra pulsación, como los nativos */
++  gtk_widget_set_sensitive (GTK_WIDGET (self), !self->cambiando);
++}
++
++
++static void
++estado_contestado (GObject *fuente, GAsyncResult *res, gpointer datos)
++{
++  g_autoptr (PhoshMandato@N@QuickSetting) self = datos;
++  GSubprocess *proc = G_SUBPROCESS (fuente);
++  g_autoptr (GError) err = NULL;
++  g_autofree char *salida = NULL;
++  g_auto (GStrv) trozos = NULL;
++  const char *primera = "";
++  const char *resto = "";
++
++  if (!g_subprocess_communicate_utf8_finish (proc, res, &salida, NULL, &err)) {
++    if (!g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED))
++      g_warning ("ranura @N@: el mandato de estado falló: %s", err->message);
++    return;
++  }
++
++  self->activo = g_subprocess_get_if_exited (proc) && g_subprocess_get_exit_status (proc) == 0;
++
++  trozos = g_strsplit (salida ? salida : "", "\n", 2);
++  if (trozos[0]) {
++    primera = g_strchomp (trozos[0]);
++    if (trozos[1])
++      resto = g_strchomp (trozos[1]);
++  }
++  gtk_label_set_label (self->detalle, resto[0] ? resto : primera);
++
++  if (self->cambiando)   /* no tapar el «encendiendo…» con una lectura intermedia */
++    return;
++
++  pintar (self, primera);
++}
++
++
++static void
++comprobar_estado (PhoshMandato@N@QuickSetting *self)
++{
++  g_autofree char *mandato = g_settings_get_string (self->ajustes, "estado");
++  g_autoptr (GSubprocess) proc = NULL;
++  g_autoptr (GError) err = NULL;
++
++  if (mandato[0] == '\0') {   /* sin mandato de estado: el botón solo recuerda la última pulsación */
++    pintar (self, NULL);
++    return;
++  }
++
++  g_cancellable_cancel (self->cancelable);
++  g_clear_object (&self->cancelable);
++  self->cancelable = g_cancellable_new ();
++
++  proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_SILENCE,
++                           &err, "/bin/sh", "-c", mandato, NULL);
++  if (proc == NULL) {
++    g_warning ("ranura @N@: no pude lanzar el mandato de estado: %s", err->message);
++    return;
++  }
++
++  g_subprocess_communicate_utf8_async (proc, NULL, self->cancelable,
++                                       estado_contestado, g_object_ref (self));
++}
++
++
++static void
++fin_del_cambio (PhoshMandato@N@QuickSetting *self, const char *salida)
++{
++  if (self->plazo) {
++    g_source_remove (self->plazo);
++    self->plazo = 0;
++  }
++  self->cambiando = FALSE;
++
++  if (salida && salida[0]) {
++    g_autofree char *limpio = g_strdup (salida);
++    gtk_label_set_label (self->detalle, g_strchomp (limpio));
++  }
++
++  comprobar_estado (self);
++}
++
++
++static gboolean
++vencio_la_espera (gpointer datos)
++{
++  PhoshMandato@N@QuickSetting *self = datos;
++
++  /* El mandato no ha terminado (p. ej. uno que se queda en marcha). Dejamos de esperarlo y preguntamos
++   * por el estado de verdad; si termina más tarde, su respuesta solo provocará otra comprobación. */
++  g_debug ("ranura @N@: el mandato no terminó en el plazo; compruebo el estado");
++  self->plazo = 0;
++  self->cambiando = FALSE;
++  comprobar_estado (self);
++
++  return G_SOURCE_REMOVE;
++}
++
++
++static void
++accion_terminada (GObject *fuente, GAsyncResult *res, gpointer datos)
++{
++  g_autoptr (PhoshMandato@N@QuickSetting) self = datos;
++  GSubprocess *proc = G_SUBPROCESS (fuente);
++  g_autoptr (GError) err = NULL;
++  g_autofree char *salida = NULL;
++
++  if (!g_subprocess_communicate_utf8_finish (proc, res, &salida, NULL, &err)) {
++    if (g_error_matches (err, G_IO_ERROR, G_IO_ERROR_CANCELLED))
++      return;
++    g_warning ("ranura @N@: %s", err->message);
++    fin_del_cambio (self, err->message);
++    return;
++  }
++
++  if (!g_subprocess_get_if_exited (proc) || g_subprocess_get_exit_status (proc) != 0) {
++    g_warning ("ranura @N@: el mandato salió con error: %s", salida ? salida : "(sin salida)");
++    fin_del_cambio (self, salida);
++    return;
++  }
++
++  fin_del_cambio (self, NULL);
++}
++
++
++static void
++al_pulsar (PhoshMandato@N@QuickSetting *self, gpointer datos)
++{
++  const char *clave = self->activo ? "apagar" : "encender";
++  g_autofree char *mandato = g_settings_get_string (self->ajustes, clave);
++  g_autoptr (GSubprocess) proc = NULL;
++  g_autoptr (GError) err = NULL;
++  int espera;
++
++  if (self->cambiando)
++    return;
++
++  if (mandato[0] == '\0') {
++    g_warning ("ranura @N@: no tiene mandato «%s» configurado", clave);
++    return;
++  }
++
++  proc = g_subprocess_new (G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE,
++                           &err, "/bin/sh", "-c", mandato, NULL);
++  if (proc == NULL) {
++    g_warning ("ranura @N@: no pude lanzar «%s»: %s", clave, err->message);
++    return;
++  }
++
++  self->cambiando = TRUE;
++  pintar (self, self->activo ? _("apagando…") : _("encendiendo…"));
++
++  espera = g_settings_get_int (self->ajustes, "espera");
++  if (espera > 0)
++    self->plazo = g_timeout_add_seconds (espera, vencio_la_espera, self);
++
++  g_subprocess_communicate_utf8_async (proc, NULL, NULL, accion_terminada, g_object_ref (self));
++}
++
++
++static gboolean
++latido (gpointer datos)
++{
++  comprobar_estado (datos);
++
++  return G_SOURCE_CONTINUE;
++}
++
++
++static void
++al_mostrarse (PhoshMandato@N@QuickSetting *self)
++{
++  int intervalo = g_settings_get_int (self->ajustes, "intervalo");
++
++  comprobar_estado (self);
++
++  /* El temporizador solo corre con el panel desplegado: un botón no tiene por qué gastar batería
++   * preguntando cada pocos segundos con la pantalla apagada. */
++  if (self->vigia == 0 && intervalo > 0)
++    self->vigia = g_timeout_add_seconds (intervalo, latido, self);
++}
++
++
++static void
++al_ocultarse (PhoshMandato@N@QuickSetting *self)
++{
++  if (self->vigia) {
++    g_source_remove (self->vigia);
++    self->vigia = 0;
++  }
++}
++
++
++static void
++phosh_mandato@N@_quick_setting_dispose (GObject *objeto)
++{
++  PhoshMandato@N@QuickSetting *self = PHOSH_MANDATO@N@_QUICK_SETTING (objeto);
++
++  if (self->vigia) {
++    g_source_remove (self->vigia);
++    self->vigia = 0;
++  }
++  if (self->plazo) {
++    g_source_remove (self->plazo);
++    self->plazo = 0;
++  }
++  g_cancellable_cancel (self->cancelable);
++  g_clear_object (&self->cancelable);
++  g_clear_object (&self->ajustes);
++
++  G_OBJECT_CLASS (phosh_mandato@N@_quick_setting_parent_class)->dispose (objeto);
++}
++
++
++static void
++phosh_mandato@N@_quick_setting_class_init (PhoshMandato@N@QuickSettingClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->dispose = phosh_mandato@N@_quick_setting_dispose;
++}
++
++
++static void
++phosh_mandato@N@_quick_setting_init (PhoshMandato@N@QuickSetting *self)
++{
++  PhoshStatusPage *pagina;
++  GtkWidget *caja;
++  g_autofree char *titulo = NULL;
++
++  self->ajustes = g_settings_new_with_path (ESQUEMA, RUTA);
++  titulo = g_settings_get_string (self->ajustes, "titulo");
++
++  self->icono = PHOSH_STATUS_ICON (phosh_status_icon_new ());
++  g_object_set (self->icono, "pixel-size", 16, NULL);
++  gtk_widget_show (GTK_WIDGET (self->icono));
++  /* por propiedad: phosh_quick_setting_set_status_icon() no lo exporta libphosh */
++  g_object_set (self, "status-icon", self->icono, NULL);
++
++  /* Página de detalle: la pulsación larga muestra lo que imprime el mandato de estado */
++  self->detalle = GTK_LABEL (gtk_label_new (""));
++  gtk_label_set_line_wrap (self->detalle, TRUE);
++  gtk_label_set_justify (self->detalle, GTK_JUSTIFY_CENTER);
++  gtk_widget_show (GTK_WIDGET (self->detalle));
++
++  caja = gtk_box_new (GTK_ORIENTATION_VERTICAL, 12);
++  gtk_widget_set_valign (caja, GTK_ALIGN_CENTER);
++  gtk_widget_set_margin_top (caja, 12);
++  gtk_widget_set_margin_bottom (caja, 12);
++  gtk_container_add (GTK_CONTAINER (caja), GTK_WIDGET (self->detalle));
++  gtk_widget_show (caja);
++
++  pagina = phosh_status_page_new ();
++  phosh_status_page_set_title (pagina, titulo);
++  phosh_status_page_set_content (pagina, caja);
++  gtk_widget_show (GTK_WIDGET (pagina));
++  phosh_quick_setting_set_status_page (PHOSH_QUICK_SETTING (self), pagina);
++  phosh_quick_setting_set_can_show_status (PHOSH_QUICK_SETTING (self), TRUE);
++
++  g_signal_connect (self, "clicked", G_CALLBACK (al_pulsar), NULL);
++  g_signal_connect (self, "map", G_CALLBACK (al_mostrarse), NULL);
++  g_signal_connect (self, "unmap", G_CALLBACK (al_ocultarse), NULL);
++  g_signal_connect_object (self->ajustes, "changed",
++                           G_CALLBACK (comprobar_estado), self, G_CONNECT_SWAPPED);
++
++  comprobar_estado (self);
++}
++
++
++char **g_io_phosh_plugin_mandato@N@_quick_setting_query (void);
++
++
++void
++g_io_module_load (GIOModule *module)
++{
++  g_type_module_use (G_TYPE_MODULE (module));
++
++  g_io_extension_point_implement (PHOSH_PLUGIN_EXTENSION_POINT_QUICK_SETTING_WIDGET,
++                                  PHOSH_TYPE_MANDATO@N@_QUICK_SETTING,
++                                  PLUGIN_NAME,
++                                  10);
++}
++
++
++void
++g_io_module_unload (GIOModule *module)
++{
++}
++
++
++char **
++g_io_phosh_plugin_mandato@N@_quick_setting_query (void)
++{
++  char *extension_points[] = {PHOSH_PLUGIN_EXTENSION_POINT_QUICK_SETTING_WIDGET, NULL};
++
++  return g_strdupv (extension_points);
++}
+diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in
+--- a/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in
++++ b/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in
+@@ -0,0 +1,6 @@
++[Plugin]
++Id=@name@
++Name=Mandato @N@
++Types=quick-setting;
++Comment=Botón que ejecuta los mandatos configurados en la ranura @N@
++Plugin=@plugins_dir@/libphosh-plugin-@name@.so
+diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/meson.build phosh-v0.57.0/plugins/mandato-quick-setting/meson.build
+--- a/plugins/mandato-quick-setting/meson.build
++++ b/plugins/mandato-quick-setting/meson.build
+@@ -0,0 +1,45 @@
++# Complemento genérico de ajustes rápidos: RANURAS que ejecutan mandatos configurables (spacewar).
++#
++# El mismo código se compila una vez por ranura porque el nombre del tipo de GObject tiene que ser único
++# en el proceso de phosh. Añadir más ranuras = añadir números a esta lista (y recompilar phosh); cambiar lo
++# que HACE una ranura no necesita recompilar nada: son ajustes (ver docs/BOTONES-AJUSTES-RAPIDOS.md).
++mandato_ranuras = ['1', '2', '3', '4']
++
++mandato_schema = 'mobi.phosh.plugins.mandato.gschema.xml'
++install_data(mandato_schema, install_dir: 'share/glib-2.0/schemas')
++
++foreach ranura : mandato_ranuras
++  mandato_name = 'mandato' + ranura + '-quick-setting'
++
++  mandato_conf = configuration_data()
++  mandato_conf.set('N', ranura)
++  mandato_conf.set('name', mandato_name)
++  mandato_conf.set('plugins_dir', plugins_dir)
++
++  mandato_src = configure_file(
++    input: 'mandato-quick-setting.c.in',
++    output: mandato_name + '.c',
++    configuration: mandato_conf,
++  )
++
++  shared_module(
++    'phosh-plugin-' + mandato_name,
++    mandato_src,
++    c_args: [
++      '-DG_LOG_DOMAIN="phosh-plugin-@0@"'.format(mandato_name),
++      '-DPLUGIN_NAME="@0@"'.format(mandato_name),
++    ],
++    dependencies: plugin_dep,
++    include_directories: phosh_inc,
++    install: true,
++    install_dir: plugins_dir,
++  )
++
++  configure_file(
++    input: 'mandato-quick-setting.plugin.in',
++    output: mandato_name + '.plugin',
++    configuration: mandato_conf,
++    install: true,
++    install_dir: plugins_dir,
++  )
++endforeach
+diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml phosh-v0.57.0/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml
+--- a/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml
++++ b/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml
+@@ -0,0 +1,43 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<schemalist>
++  <!-- Esquema REUBICABLE (sin «path»): una ruta por ranura, /mobi/phosh/plugins/mandato/N/ -->
++  <schema id="mobi.phosh.plugins.mandato">
++    <key name="titulo" type="s">
++      <default>"Mandato"</default>
++      <summary>Texto bajo el icono</summary>
++      <description>Se usa cuando el mandato de estado no imprime nada.</description>
++    </key>
++    <key name="icono" type="s">
++      <default>"utilities-terminal-symbolic"</default>
++      <summary>Icono cuando está encendido</summary>
++    </key>
++    <key name="icono-apagado" type="s">
++      <default>""</default>
++      <summary>Icono cuando está apagado (vacío: el mismo)</summary>
++    </key>
++    <key name="encender" type="s">
++      <default>""</default>
++      <summary>Mandato al pulsar estando apagado</summary>
++      <description>Se ejecuta con /bin/sh -c en la sesión del usuario.</description>
++    </key>
++    <key name="apagar" type="s">
++      <default>""</default>
++      <summary>Mandato al pulsar estando encendido</summary>
++    </key>
++    <key name="estado" type="s">
++      <default>""</default>
++      <summary>Mandato que dice si está encendido</summary>
++      <description>Salida 0 = encendido. Su primera línea se muestra bajo el icono; el resto, en la página de detalle (pulsación larga).</description>
++    </key>
++    <key name="intervalo" type="i">
++      <default>5</default>
++      <range min="0" max="3600"/>
++      <summary>Segundos entre recomprobaciones mientras el panel está visible (0: ninguna)</summary>
++    </key>
++    <key name="espera" type="i">
++      <default>15</default>
++      <range min="0" max="600"/>
++      <summary>Segundos tras los que se deja de esperar a encender o apagar</summary>
++    </key>
++  </schema>
++</schemalist>
+diff -ruN original/phosh-v0.57.0/plugins/meson.build phosh-v0.57.0/plugins/meson.build
+--- a/plugins/meson.build
++++ b/plugins/meson.build
+@@ -69,6 +69,7 @@
+ 
+ quick_setting_plugins = [
+   'caffeine-quick-setting',
++  'mandato-quick-setting',
+   'dark-mode-quick-setting',
+   'location-quick-setting',
+   'mobile-data-quick-setting',

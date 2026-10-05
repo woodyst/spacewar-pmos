@@ -1,0 +1,29 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Mon, 21 Sep 2026 13:00:00 +0200
+Subject: [PATCH] shortcuts-bar: dibujar Shift+Tab
+
+gtk_accelerator_valid() de GTK3 rechaza cualquier acelerador con Tab (lo
+reserva para moverse entre controles), y la excepcion de
+pos_accelerator_get_label() que dibuja Tab como «⭾» solo cubre teclas sin
+modificadores. Resultado: «<shift>Tab» en la fila de atajos no se dibuja
+nunca y el diario se llena de "Invalid shortcut '<shift>Tab': (0xff09/0x1)".
+Se dibuja como «⇧⭾». Enviarlo ya funcionaba: pos_vk_driver_key_press_gdk()
+pulsa Tab con el modificador Shift.
+---
+--- a/src/pos-shortcuts-bar.c	2026-09-21 12:30:22.548226493 +0200
++++ b/src/pos-shortcuts-bar.c	2026-09-21 12:30:22.658225404 +0200
+@@ -152,6 +152,14 @@
+       return g_strdup (label);
+   }
+ 
++  /* Shift+Tab (tabulador inverso). gtk_accelerator_valid() de GTK3 rechaza
++   * cualquier acelerador con Tab -- lo reserva para moverse entre controles --
++   * asi que sin esta excepcion «<shift>Tab» nunca se dibuja ("Invalid shortcut
++   * '<shift>Tab'"). Enviarlo si funciona: pos_vk_driver_key_press_gdk() pulsa
++   * la tecla Tab con el modificador Shift. */
++  if (shortcut->key == GDK_KEY_Tab && shortcut->modifiers == GDK_SHIFT_MASK)
++    return g_strdup ("⇧⭾");
++
+   if (shortcut->modifiers)
+     return NULL;
+ 

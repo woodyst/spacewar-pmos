@@ -1,0 +1,22 @@
+# /etc/systemd/system/hexagonrpcd-adsp-sensorspd.service — sustituye a la del paquete (spacewar, 2026-09-15)
+#
+# Copia de /usr/lib/systemd/system/hexagonrpcd-adsp-sensorspd.service (hexagonrpcd-systemd 0.4.0.100-r13) SIN
+# Conflicts=/Before=suspend.target: pararlo en cada suspensión y relanzarlo al despertar agotaba el driver fastrpc
+# («No space left on device» tras ~70 ciclos) y colgó el móvil (2026-09-15 08:44). Ver hexagonrpcd-adsp-rootpd.service.
+# ⚠️ En surya, suspender con el proceso de sensores vivo estrellaba el ADSP; en spacewar se comprobó con
+#    pruebas/energia/ciclos-suspension.sh antes de dejarlo así.
+[Unit]
+Description=Server for FastRPC remote procedure calls from Qualcomm ADSP - sensorspd
+# This service shouldn't be run on devices with an SDSP
+ConditionPathExists=!/dev/fastrpc-sdsp
+ConditionPathExists=/dev/fastrpc-adsp
+
+[Service]
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -s
+Restart=always
+RestartSec=3
+User=fastrpc
+Group=fastrpc
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 21:16:29 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: map the WCD9385
+ DMIC port to its own SoundWire port
+
+tx-port-mapping <1 2 2 4> put the codec DMIC0-3/MBHC port on master port 2, together with ADC3/ADC4,
+so the two collided (the SWR_MIC inputs of port 2 carried garbage). The phone microphones are digital:
+stock Android maps DMIC0 (handset) to SWRM_TX3_CH1 and DMIC3 (speakerphone) to SWRM_TX3_CH4, i.e.
+master port 3. Use <1 2 3 4>, as Fairphone 5 does with the same codec on the same SoC.
+---
+ arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index 5f148d3ec..85e25ad1d 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1725,7 +1725,7 @@ wcd_tx: codec@0,3 {
+ 		compatible = "sdw20217010d00";
+ 		reg = <0 3>;
+ 
+-		qcom,tx-port-mapping = <1 2 2 4>;
++		qcom,tx-port-mapping = <1 2 3 4>;
+ 	};
+ };
+ 
+-- 
+2.47.3
+

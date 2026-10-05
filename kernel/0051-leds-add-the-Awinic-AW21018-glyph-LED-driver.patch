@@ -1,0 +1,464 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Mon, 5 Oct 2026 19:38:00 +0200
+Subject: [PATCH] leds: add the Awinic AW21018 glyph LED driver
+
+The Nothing Phone (1) drives the white LEDs of the "glyph" interface on
+its back with an AW21018 18-channel LED controller on i2c1.  Model the
+whole white strip as a single LED (function "indicator", colour white) so
+that it can be used as a notification LED, blinking through the generic
+LED pattern trigger.
+
+The initialisation sequence, the per-channel scale table and the global
+current are taken from Awinic's reference driver.  The board is PVT (hwid
+straps gpio19 and gpio21 read high, as in the vendor "nt,hwid" node),
+which selects the "EVT" table and a global current of 160.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../bindings/leds/awinic,aw21018.yaml         |  83 +++++
+ drivers/leds/Kconfig                          |  15 +
+ drivers/leds/Makefile                         |   1 +
+ drivers/leds/leds-aw21018.c                   | 305 ++++++++++++++++++
+ 4 files changed, 404 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/leds/awinic,aw21018.yaml
+ create mode 100644 drivers/leds/leds-aw21018.c
+
+diff --git a/Documentation/devicetree/bindings/leds/awinic,aw21018.yaml b/Documentation/devicetree/bindings/leds/awinic,aw21018.yaml
+new file mode 100644
+index 000000000..be5730aa5
+--- /dev/null
++++ b/Documentation/devicetree/bindings/leds/awinic,aw21018.yaml
+@@ -0,0 +1,83 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/leds/awinic,aw21018.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Awinic AW21018 LED controller
++
++maintainers:
++  - Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
++
++description:
++  The Awinic AW21018 is a single-colour matrix LED controller with 18
++  channels, programmed through an I2C interface.
++
++properties:
++  compatible:
++    enum:
++      - awinic,aw21018
++
++  reg:
++    maxItems: 1
++
++  enable-gpios:
++    description: GPIO used to enable the chip.
++    maxItems: 1
++
++  awinic,t0-tables:
++    type: boolean
++    description:
++      Select the channel scale table of the early T0 hardware revision.
++      Boards from EVT onwards (the default) use a different table.
++
++  "#address-cells":
++    const: 1
++
++  "#size-cells":
++    const: 0
++
++patternProperties:
++  "^led@[0-9a-f]+$":
++    type: object
++    $ref: common.yaml#
++    unevaluatedProperties: false
++
++    properties:
++      reg:
++        maxItems: 1
++
++    required:
++      - reg
++
++required:
++  - compatible
++  - reg
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/gpio/gpio.h>
++    #include <dt-bindings/leds/common.h>
++
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        led-controller@20 {
++            compatible = "awinic,aw21018";
++            reg = <0x20>;
++            enable-gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
++
++            #address-cells = <1>;
++            #size-cells = <0>;
++
++            led@0 {
++                reg = <0>;
++                function = LED_FUNCTION_INDICATOR;
++                color = <LED_COLOR_ID_WHITE>;
++            };
++        };
++    };
++...
+diff --git a/drivers/leds/Kconfig b/drivers/leds/Kconfig
+index f4a0a3c8c..325ec2da2 100644
+--- a/drivers/leds/Kconfig
++++ b/drivers/leds/Kconfig
+@@ -137,6 +137,21 @@ config LEDS_AW200XX
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called leds-aw200xx.
+ 
++config LEDS_AW21018
++	tristate "LED support for Awinic AW21018"
++	depends on LEDS_CLASS
++	depends on I2C
++	help
++	  This option enables support for the Awinic AW21018 (18 channels)
++	  LED controller.
++
++	  On the Nothing Phone (1) the AW21018 drives the white LEDs of the
++	  "glyph" interface on the back; the driver exposes them as a single
++	  white LED that can be used as a notification LED.
++
++	  To compile this driver as a module, choose M here: the module
++	  will be called leds-aw21018.
++
+ config LEDS_AW2013
+ 	tristate "LED support for Awinic AW2013"
+ 	depends on LEDS_CLASS && I2C && OF
+diff --git a/drivers/leds/Makefile b/drivers/leds/Makefile
+index 7db376891..8302d0dee 100644
+--- a/drivers/leds/Makefile
++++ b/drivers/leds/Makefile
+@@ -18,6 +18,7 @@ obj-$(CONFIG_LEDS_ARIEL)		+= leds-ariel.o
+ obj-$(CONFIG_LEDS_OSRAM_AMS_AS3668)	+= leds-as3668.o
+ obj-$(CONFIG_LEDS_AW200XX)		+= leds-aw200xx.o
+ obj-$(CONFIG_LEDS_AW2013)		+= leds-aw2013.o
++obj-$(CONFIG_LEDS_AW21018)		+= leds-aw21018.o
+ obj-$(CONFIG_LEDS_BCM6328)		+= leds-bcm6328.o
+ obj-$(CONFIG_LEDS_BCM6358)		+= leds-bcm6358.o
+ obj-$(CONFIG_LEDS_BD2606MVV)		+= leds-bd2606mvv.o
+diff --git a/drivers/leds/leds-aw21018.c b/drivers/leds/leds-aw21018.c
+new file mode 100644
+index 000000000..d9b70c975
+--- /dev/null
++++ b/drivers/leds/leds-aw21018.c
+@@ -0,0 +1,305 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Awinic AW21018 LED controller
++ *
++ * The Nothing Phone (1) ("nothing,spacewar") drives the white LEDs of its
++ * "glyph" interface on the back with an AW21018 (18 channels).  This driver
++ * models the whole white strip as a single LED so it can be used as a
++ * notification LED, for example through the generic LED pattern trigger.
++ *
++ * The channel scale table and the global current follow Awinic's reference
++ * driver.  The Nothing Phone (1) is a PVT board (hwid straps gpio19 = 1 and
++ * gpio21 = 1, per the vendor "nt,hwid" node), which selects the "EVT" table
++ * and a global current of 160.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/bitops.h>
++#include <linux/delay.h>
++#include <linux/device.h>
++#include <linux/gfp.h>
++#include <linux/gpio/consumer.h>
++#include <linux/i2c.h>
++#include <linux/leds.h>
++#include <linux/math.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/property.h>
++
++/* Single byte (page-less) register map. */
++#define AW210XX_REG_GCR			0x20	/* global control */
++#define AW210XX_REG_BR00L		0x21	/* channel brightness, 2 bytes each */
++#define AW210XX_REG_UPDATE		0x45
++#define AW210XX_REG_SL00		0x46	/* channel scale (current), 1 byte each */
++#define AW210XX_REG_GCCR		0x58	/* global current */
++#define AW210XX_REG_UVCR		0x60	/* under-voltage */
++#define AW210XX_REG_GCR2		0x61
++#define AW210XX_REG_CHIPID		0x70
++#define AW210XX_REG_GCFG		0x8b	/* group configuration */
++
++/* AW210XX_REG_GCR bits. */
++#define AW210XX_GCR_CHIPEN		BIT(0)
++#define AW210XX_GCR_APSE		BIT(7)
++#define AW210XX_GCR_PWMRES_MASK		GENMASK(2, 1)
++#define AW210XX_GCR_PWMRES_12BIT	FIELD_PREP(AW210XX_GCR_PWMRES_MASK, 2)
++#define AW210XX_GCR_CLKFRQ_MASK		GENMASK(6, 4)
++#define AW210XX_GCR_CLKFRQ_1MHZ		FIELD_PREP(AW210XX_GCR_CLKFRQ_MASK, 2)
++
++/* AW210XX_REG_GCR2 bits. */
++#define AW210XX_GCR2_RGBMD		BIT(0)
++#define AW210XX_GCR2_SBMD		BIT(1)
++
++/* AW210XX_REG_UVCR bits. */
++#define AW210XX_UVCR_UVPD		BIT(1)
++#define AW210XX_UVCR_UVDIS		BIT(0)
++
++#define AW21018_GROUP_DISABLE		0x40
++
++#define AW21018_CHIPID			0x02
++
++#define AW21018_NUM_CHANNELS		18
++#define AW210XX_BR_MAX			0xfff	/* 12-bit brightness */
++#define AW210XX_MAX_BRIGHTNESS		255
++#define AW210XX_UPDATE_BR_SL		0x00
++#define AW210XX_GLOBAL_CURRENT_EVT	160
++
++/*
++ * Channels of the white glyph strip.  Channel 6 is unused and 17/18 are not
++ * part of the white strip, matching the vendor "all white LEDs" helper.
++ */
++static const u8 aw210xx_glyph_channels[] = {
++	1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
++};
++
++/* Channel scale table for EVT/DVT/PVT boards. */
++static const u8 aw21018_all_sl_evt[AW21018_NUM_CHANNELS] = {
++	0x50, 0xbd, 0xbd, 0xbf, 0xbf, 0x00, 0xe9, 0x07, 0x07,
++	0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x2a, 0x00,
++};
++
++/* Channel scale table for T0 boards. */
++static const u8 aw21018_all_sl_t0[AW21018_NUM_CHANNELS] = {
++	0x44, 0x90, 0x90, 0xd6, 0x3e, 0x00, 0xb2, 0x06, 0x06,
++	0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x06, 0x46, 0x00,
++};
++
++struct aw21018 {
++	struct i2c_client *client;
++	struct gpio_desc *enable_gpio;
++	struct led_classdev cdev;
++	struct mutex lock;
++};
++
++static int aw210xx_write(struct aw21018 *aw, u8 reg, u8 val)
++{
++	return i2c_smbus_write_byte_data(aw->client, reg, val);
++}
++
++static int aw210xx_update_bits(struct aw21018 *aw, u8 reg, u8 mask, u8 val)
++{
++	int ret;
++
++	ret = i2c_smbus_read_byte_data(aw->client, reg);
++	if (ret < 0)
++		return ret;
++
++	return aw210xx_write(aw, reg, (ret & ~mask) | (val & mask));
++}
++
++static int aw210xx_write_array(struct aw21018 *aw, u8 reg, const u8 *vals, size_t n)
++{
++	int ret;
++	size_t i;
++
++	for (i = 0; i < n; i++) {
++		ret = aw210xx_write(aw, reg + i, vals[i]);
++		if (ret < 0)
++			return ret;
++	}
++
++	return 0;
++}
++
++static int aw21018_chip_init(struct aw21018 *aw)
++{
++	const u8 *sl;
++	int ret;
++
++	sl = device_property_read_bool(&aw->client->dev, "awinic,t0-tables") ?
++		aw21018_all_sl_t0 : aw21018_all_sl_evt;
++
++	/* Chip enable. */
++	ret = aw210xx_update_bits(aw, AW210XX_REG_GCR,
++				  AW210XX_GCR_CHIPEN, AW210XX_GCR_CHIPEN);
++	if (ret < 0)
++		return ret;
++
++	/* Single (non RGB) mode, no short detection. */
++	ret = aw210xx_update_bits(aw, AW210XX_REG_GCR2,
++				  AW210XX_GCR2_RGBMD | AW210XX_GCR2_SBMD, 0);
++	if (ret < 0)
++		return ret;
++
++	/* 1 MHz oscillator, 12-bit PWM resolution. */
++	ret = aw210xx_update_bits(aw, AW210XX_REG_GCR,
++				  AW210XX_GCR_CLKFRQ_MASK |
++				  AW210XX_GCR_PWMRES_MASK,
++				  AW210XX_GCR_CLKFRQ_1MHZ |
++				  AW210XX_GCR_PWMRES_12BIT);
++	if (ret < 0)
++		return ret;
++
++	/* Global current. */
++	ret = aw210xx_write(aw, AW210XX_REG_GCCR, AW210XX_GLOBAL_CURRENT_EVT);
++	if (ret < 0)
++		return ret;
++
++	/* Disable the under-voltage protection. */
++	ret = aw210xx_update_bits(aw, AW210XX_REG_UVCR,
++				  AW210XX_UVCR_UVPD | AW210XX_UVCR_UVDIS, 0);
++	if (ret < 0)
++		return ret;
++
++	/* Auto power save. */
++	ret = aw210xx_update_bits(aw, AW210XX_REG_GCR,
++				  AW210XX_GCR_APSE, AW210XX_GCR_APSE);
++	if (ret < 0)
++		return ret;
++
++	/* Group control off. */
++	ret = aw210xx_write(aw, AW210XX_REG_GCFG, AW21018_GROUP_DISABLE);
++	if (ret < 0)
++		return ret;
++
++	/* Per channel scale (drive current). */
++	return aw210xx_write_array(aw, AW210XX_REG_SL00, sl,
++				   AW21018_NUM_CHANNELS);
++}
++
++static int aw210xx_brightness_set(struct led_classdev *cdev,
++				  enum led_brightness brightness)
++{
++	struct aw21018 *aw = container_of(cdev, struct aw21018, cdev);
++	u16 br = DIV_ROUND_CLOSEST(brightness * AW210XX_BR_MAX,
++				   AW210XX_MAX_BRIGHTNESS);
++	int ret;
++	size_t i;
++
++	mutex_lock(&aw->lock);
++
++	for (i = 0; i < ARRAY_SIZE(aw210xx_glyph_channels); i++) {
++		u8 off = (aw210xx_glyph_channels[i] - 1) * 2;
++
++		ret = aw210xx_write(aw, AW210XX_REG_BR00L + off, br & 0xff);
++		if (ret < 0)
++			goto out;
++		ret = aw210xx_write(aw, AW210XX_REG_BR00L + off + 1,
++				    (br >> 8) & 0x0f);
++		if (ret < 0)
++			goto out;
++	}
++
++	/* Latch the new brightness and scale values. */
++	ret = aw210xx_write(aw, AW210XX_REG_UPDATE, AW210XX_UPDATE_BR_SL);
++out:
++	if (ret < 0)
++		dev_err(cdev->dev, "failed to set brightness: %d\n", ret);
++
++	mutex_unlock(&aw->lock);
++
++	return ret;
++}
++
++static int aw21018_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct led_init_data init_data = {};
++	struct aw21018 *aw;
++	struct fwnode_handle *child;
++	int ret;
++	int chipid;
++
++	aw = devm_kzalloc(dev, sizeof(*aw), GFP_KERNEL);
++	if (!aw)
++		return -ENOMEM;
++
++	aw->client = client;
++	mutex_init(&aw->lock);
++	i2c_set_clientdata(client, aw);
++
++	aw->enable_gpio = devm_gpiod_get_optional(dev, "enable",
++						  GPIOD_OUT_HIGH);
++	if (IS_ERR(aw->enable_gpio))
++		return dev_err_probe(dev, PTR_ERR(aw->enable_gpio),
++				     "failed to get enable GPIO\n");
++
++	if (aw->enable_gpio)
++		usleep_range(2000, 2500);
++
++	chipid = i2c_smbus_read_byte_data(client, AW210XX_REG_CHIPID);
++	if (chipid < 0)
++		return dev_err_probe(dev, chipid, "failed to read chip ID\n");
++
++	switch (chipid) {
++	case AW21018_CHIPID:
++		break;
++	default:
++		return dev_err_probe(dev, -ENODEV,
++				     "unsupported chip ID 0x%02x\n", chipid);
++	}
++
++	dev_info(dev, "Awinic AW21018 LED controller\n");
++
++	ret = aw21018_chip_init(aw);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "failed to initialise chip\n");
++
++	child = device_get_next_child_node(dev, NULL);
++	if (!child)
++		return dev_err_probe(dev, -EINVAL, "missing LED child node\n");
++
++	init_data.fwnode = child;
++
++	aw->cdev.brightness_set_blocking = aw210xx_brightness_set;
++	aw->cdev.max_brightness = AW210XX_MAX_BRIGHTNESS;
++
++	ret = devm_led_classdev_register_ext(dev, &aw->cdev, &init_data);
++	fwnode_handle_put(child);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "failed to register LED\n");
++
++	/* Start with the strip off. */
++	ret = aw210xx_brightness_set(&aw->cdev, LED_OFF);
++	if (ret < 0)
++		dev_warn(dev, "failed to turn the LEDs off: %d\n", ret);
++
++	return 0;
++}
++
++static const struct of_device_id aw21018_of_match[] = {
++	{ .compatible = "awinic,aw21018" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(of, aw21018_of_match);
++
++static const struct i2c_device_id aw21018_i2c_id[] = {
++	{ "aw21018" },
++	{ /* sentinel */ }
++};
++MODULE_DEVICE_TABLE(i2c, aw21018_i2c_id);
++
++static struct i2c_driver aw21018_driver = {
++	.driver = {
++		.name = "leds-aw21018",
++		.of_match_table = aw21018_of_match,
++	},
++	.probe = aw21018_probe,
++	.id_table = aw21018_i2c_id,
++};
++module_i2c_driver(aw21018_driver);
++
++MODULE_AUTHOR("Eduardo Garcia-Madico Portabella <woodyst@gmail.com>");
++MODULE_DESCRIPTION("Awinic AW21018 LED controller driver");
++MODULE_LICENSE("GPL");

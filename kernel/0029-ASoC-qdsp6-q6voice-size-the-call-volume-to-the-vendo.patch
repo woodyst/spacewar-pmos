@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 14:42:50 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: size the call volume to the vendor
+ volume table
+
+The Rx volume tables in the Nothing Phone (1) voice calibration have 7
+steps (0-6) for every network and sample rate, so a control that runs to
+15 spends most of its range on steps the DSP has no row for. Cap it at 6.
+
+Log a failed volume step or uplink mute at info level, both when a call
+is set up and when it changes during the call: nothing else says why the
+call volume or mute did not take.
+---
+ sound/soc/qcom/qdsp6/q6voice-dai.c |  6 +++++-
+ sound/soc/qcom/qdsp6/q6voice.c     | 12 ++++++++----
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice-dai.c b/sound/soc/qcom/qdsp6/q6voice-dai.c
+index 06feae34d..d661e20ff 100644
+--- a/sound/soc/qcom/qdsp6/q6voice-dai.c
++++ b/sound/soc/qcom/qdsp6/q6voice-dai.c
+@@ -349,7 +349,11 @@ static int q6voice_cal_put(struct snd_kcontrol *kcontrol,
+  * alsa-lib files it as a playback volume and a UCM profile can hand it to PipeWire (PlaybackVolume) for the
+  * call volume slider. The usable range depends on the Rx volume table of the calibration.
+  */
+-#define Q6VOICE_RX_VOLUME_MAX	15
++/*
++ * The vendor Rx volume tables have 7 steps (0-6) for every network and sample rate (Nothing Phone (1)
++ * handset and speaker calibration); a step past the table leaves the call at whatever the DSP had.
++ */
++#define Q6VOICE_RX_VOLUME_MAX	6
+ 
+ static int q6voice_rx_volume_get(struct snd_kcontrol *kcontrol,
+ 				 struct snd_ctl_elem_value *ucontrol)
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index 63ac901cb..c1fda9bbf 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -244,9 +244,13 @@ int q6voice_set_tx_mute(bool mute)
+ 		p = &v->paths[i];
+ 		mutex_lock(&p->lock);
+ 		if (p->runtime && p->runtime->started == 3 &&
+-		    p->runtime->sessions[Q6VOICE_SERVICE_CVS])
++		    p->runtime->sessions[Q6VOICE_SERVICE_CVS]) {
+ 			ret = q6cvs_mute(p->runtime->sessions[Q6VOICE_SERVICE_CVS],
+ 					 0 /* TX */, mute);
++			if (ret)
++				dev_info(v->dev, "tx %smute not applied: %d\n",
++					 mute ? "" : "un", ret);
++		}
+ 		mutex_unlock(&p->lock);
+ 	}
+ 
+@@ -840,12 +844,12 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 	 */
+ 	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
+ 	if (ret)
+-		dev_dbg(dev, "rx volume step %d not applied: %d\n", rx_volume_step, ret);
++		dev_info(dev, "rx volume step %d not applied: %d\n", rx_volume_step, ret);
+ 
+ 	ret = q6cvs_mute(p->runtime->sessions[Q6VOICE_SERVICE_CVS], 0 /* TX */,
+ 			 q6voice_tx_muted);
+ 	if (ret)
+-		dev_dbg(dev, "tx %smute not applied: %d\n",
++		dev_info(dev, "tx %smute not applied: %d\n",
+ 			q6voice_tx_muted ? "" : "un", ret);
+ 
+ 	ret = q6mvm_start(mvm, true);
+@@ -1231,7 +1235,7 @@ static void q6voice_switch_device(struct work_struct *work)
+ 	/* Best effort, same as when the call was set up. */
+ 	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
+ 	if (ret)
+-		dev_dbg(dev, "rx volume step not reapplied: %d\n", ret);
++		dev_info(dev, "rx volume step not reapplied: %d\n", ret);
+ 
+ 	ret = q6mvm_start(mvm, true);
+ 	if (ret)
+-- 
+2.47.3
+

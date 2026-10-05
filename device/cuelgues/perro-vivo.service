@@ -1,0 +1,25 @@
+[Unit]
+Description=Perro guardian por hardware (Gunyah) con prueba de vida real
+Documentation=https://github.com/woodyst/spacewar-pmos
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+# Solo si hay perro: sin CONFIG_GUNYAH_WATCHDOG (kernel anterior a r118) no hace nada.
+ConditionPathExists=/dev/watchdog
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/perro-vivo.sh
+Restart=always
+RestartSec=5
+# ⚠️ Si este servicio muere y NO vuelve, el perro muerde: es lo que se quiere en un congelado, pero un fallo
+#    del propio guion también reinicia. Por eso Restart=always y una prueba de vida barata.
+# PLAZO: el perro de Gunyah admite como mucho 32 s.
+Environment=PLAZO=30 CADA=5 FALLOS=2 ESPERA_PRUEBA=8
+# El trap escribe 'V' al parar y lo desarma: que no lo maten antes de tiempo al apagar.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+[Install]
+WantedBy=sysinit.target

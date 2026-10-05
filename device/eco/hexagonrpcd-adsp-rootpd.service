@@ -1,0 +1,24 @@
+# /etc/systemd/system/hexagonrpcd-adsp-rootpd.service — sustituye a la del paquete (spacewar, 2026-09-15)
+#
+# Copia de /usr/lib/systemd/system/hexagonrpcd-adsp-rootpd.service (hexagonrpcd-systemd 0.4.0.100-r13) con dos cambios:
+#   · SIN Conflicts=/Before=suspend.target: la del paquete para el servidor en cada suspensión y hacía falta relanzarlo
+#     al despertar. Con volver-a-dormir hay 40-70 suspensiones por noche y, tras ~70 paradas y arranques, el driver
+#     fastrpc devolvía «Could not attach to FastRPC node: No space left on device» y la suspensión siguiente colgó el
+#     móvil (2026-09-15 08:44). systemd no permite quitar un Conflicts= con un drop-in: por eso la unidad entera.
+#   · el -R del firmware del teléfono (antes override-fwdir.conf): el dominio raíz sirve dsp/adsp/*.so desde ahí.
+[Unit]
+Description=Server for FastRPC remote procedure calls from Qualcomm ADSP - RootPD
+# FIXME: Remove this once hexagonrpcd can serve rootpd on the ADSP
+# of the SDM845 devices
+ConditionPathExists=!/dev/fastrpc-sdsp
+ConditionPathExists=/dev/fastrpc-adsp
+
+[Service]
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -R /usr/share/qcom/sm7325/Nothing/spacewar
+Restart=always
+RestartSec=3
+User=fastrpc
+Group=fastrpc
+
+[Install]
+WantedBy=multi-user.target

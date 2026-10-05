@@ -1,0 +1,44 @@
+From 3e1620e09fd5d9fb27fdb9f72d253f3bc801cdd1 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 15 Sep 2026 22:25:45 +0200
+Subject: [PATCH] bearer-qmi: don't enable the WDS event report indications
+
+event_report_indication_cb() only logs that a report arrived, so none of the
+twelve indications requested on connect is used. On the Nothing Phone (1)
+(SM7325) the modem sends these event reports while the system is suspended
+and each one wakes it: the first QRTR packet after 5 of 8 automatic wakes in
+an hour was a WDS Event Report indication (0x0001) to ModemManager's client,
+in bursts of 2-3 wakes a few seconds apart.
+
+Request the indications disabled on connect, as the cleanup path already
+does. Connection status changes keep arriving through the Packet Service
+Status indications.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ src/mm-bearer-qmi.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/src/mm-bearer-qmi.c b/src/mm-bearer-qmi.c
+index 64d983eb..62fe528d 100644
+--- a/src/mm-bearer-qmi.c
++++ b/src/mm-bearer-qmi.c
+@@ -1533,7 +1533,13 @@ setup_event_report_unsolicited_events (MMBearerQmi *self,
+                                        GAsyncReadyCallback callback,
+                                        gpointer user_data)
+ {
+-    QmiMessageWdsSetEventReportInput *input = event_report_input_new (TRUE);
++    /* The event report indication handler only logs that the report was
++     * received, so none of these indications is used. Enabling them made
++     * the modem send an event report (dormancy, bearer technology, channel
++     * rate...) that woke a suspended system every few minutes; request them
++     * disabled instead. Connection status changes still come through the
++     * "Packet Service Status" indications. */
++    QmiMessageWdsSetEventReportInput *input = event_report_input_new (FALSE);
+ 
+     qmi_client_wds_set_event_report (client,
+                                      input,
+-- 
+2.43.0
+

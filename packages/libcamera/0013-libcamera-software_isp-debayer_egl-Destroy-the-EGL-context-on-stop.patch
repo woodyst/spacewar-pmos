@@ -1,0 +1,101 @@
+From b7f44c053e7df13d339f8117483123bb41d19061 Mon Sep 17 00:00:00 2001
+From: Eduardo <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 16:41:11 +0200
+Subject: [PATCH] libcamera: software_isp: debayer_egl: Destroy the EGL context
+ on stop
+
+DebayerEGL::start() calls eGL::initEGLContext() on every start, which
+creates a new EGL context and overwrites context_ without destroying the
+previous one; only ~eGL() destroys the last context. SoftwareIsp also
+runs every session on a new ISP worker thread, so the previous context
+stays current on a thread that has exited and is never freed, together
+with the resources it still references.
+
+On a Nothing Phone (1) (sm7325, Adreno, Mesa freedreno) each camera
+session run through the PipeWire camera monitor of WirePlumber left one
+more 8 MiB output buffer alive: the dma-bufs were not referenced by any
+process but stayed imported in the GPU driver
+(/sys/kernel/debug/dri/0/gem), growing from 5 to 8 after four sessions.
+With a CMA based dma-heap this exhausted a 16 MiB CMA area after one or
+two sessions.
+
+Add eGL::destroyEGLContext(), which unbinds the context, destroys it and
+releases the per-thread EGL state, and call it at the end of
+DebayerEGL::stop(), on the thread that owns the context and before that
+thread exits.
+---
+ include/libcamera/internal/egl.h           |  1 +
+ src/libcamera/egl.cpp                      | 22 ++++++++++++++++++++++
+ src/libcamera/software_isp/debayer_egl.cpp | 13 ++++++++++++-
+ 3 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/include/libcamera/internal/egl.h b/include/libcamera/internal/egl.h
+index 1e31d49..290b9e5 100644
+--- a/include/libcamera/internal/egl.h
++++ b/include/libcamera/internal/egl.h
+@@ -103,6 +103,7 @@ public:
+ 	~eGL();
+ 
+ 	int initEGLContext();
++	void destroyEGLContext();
+ 	static bool isAvailable();
+ 
+ 	int createInputDMABufTexture2D(eGLImage &eglImage, int fd);
+diff --git a/src/libcamera/egl.cpp b/src/libcamera/egl.cpp
+index 7ec7a65..bb9dbf3 100644
+--- a/src/libcamera/egl.cpp
++++ b/src/libcamera/egl.cpp
+@@ -462,6 +462,28 @@ fail:
+ 	return -ENODEV;
+ }
+ 
++/**
++ * \brief Release and destroy the EGL context
++ *
++ * Unbinds the context from the calling thread, destroys it and releases the
++ * per-thread EGL state. Must be called from the thread that created the
++ * context with initEGLContext(), before that thread exits: a context that is
++ * still current on a thread that has exited is never freed, and neither are
++ * the textures and imported dma-bufs it references.
++ */
++void eGL::destroyEGLContext()
++{
++	if (context_ == EGL_NO_CONTEXT)
++		return;
++
++	ASSERT(tid_ == Thread::currentId());
++
++	eglMakeCurrent(display_, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
++	eglDestroyContext(display_, context_);
++	context_ = EGL_NO_CONTEXT;
++	eglReleaseThread();
++}
++
+ /**
+  * \brief Make the EGL context current for the calling thread
+  *
+diff --git a/src/libcamera/software_isp/debayer_egl.cpp b/src/libcamera/software_isp/debayer_egl.cpp
+index f8cf81d..42d8b96 100644
+--- a/src/libcamera/software_isp/debayer_egl.cpp
++++ b/src/libcamera/software_isp/debayer_egl.cpp
+@@ -726,8 +726,19 @@ void DebayerEGL::stop()
+ 	eglImageOutCache_.clear();
+ 	eglImageInCache_.clear();
+ 
+-	if (programId_)
++	if (programId_) {
+ 		glDeleteProgram(programId_);
++		programId_ = 0;
++	}
++
++	/*
++	 * start() creates a new EGL context every time, on a new ISP worker
++	 * thread. Destroy the context here, on the thread that owns it and
++	 * before the thread exits. Otherwise each start/stop cycle leaks a
++	 * context that stays current on a dead thread, together with the last
++	 * imported output dma-buf it still references.
++	 */
++	egl_.destroyEGLContext();
+ }
+ 
+ SizeRange DebayerEGL::sizes(PixelFormat inputFormat, const Size &inputSize)

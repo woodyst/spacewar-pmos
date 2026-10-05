@@ -1,0 +1,225 @@
+From c5c171e2a339227d96acf0ad8fa738c939a63fd2 Mon Sep 17 00:00:00 2001
+From: Eduardo <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 15:59:20 +0200
+Subject: [PATCH] libcamera: camera_lens: Power the lens only while the camera
+ is acquired
+
+Lens drivers such as ak7375 and dw9719 power the actuator up when their
+subdev node is opened and down when the last file handle is closed.
+CameraLens opened the node in init() and kept it open for the lifetime
+of the camera, so the voice coil and its regulators stayed powered even
+when no application used the camera. On phones this happens all the
+time: the libcamera monitor in WirePlumber enumerates the cameras at
+session start and never releases them.
+
+Cache the controls in init() and close the V4L2Subdevice right after.
+Add CameraLens::open() and close(), backed by a separate file handle so
+that reopening does not enumerate the V4L2 controls again, and move the
+lens with VIDIOC_S_CTRL on that handle. setFocusPosition() opens the
+lens on demand, so pipeline handlers that never call open() keep
+working.
+
+In the simple pipeline handler, open the lens in acquireDevice() and
+close it in releaseDevice().
+
+Measured on the Nothing Phone (1) (sm7325): with WirePlumber running and
+no camera application, both actuators (dw9800w and ak7375) stayed in
+runtime PM "active" with their regulators on.
+---
+ include/libcamera/internal/camera_lens.h |  5 ++
+ src/libcamera/camera_lens.cpp            | 84 +++++++++++++++++++++++-
+ src/libcamera/pipeline/simple/simple.cpp | 25 +++++++
+ 3 files changed, 111 insertions(+), 3 deletions(-)
+
+diff --git a/include/libcamera/internal/camera_lens.h b/include/libcamera/internal/camera_lens.h
+index f347c5e..5e85540 100644
+--- a/include/libcamera/internal/camera_lens.h
++++ b/include/libcamera/internal/camera_lens.h
+@@ -12,6 +12,7 @@
+ 
+ #include <libcamera/base/class.h>
+ #include <libcamera/base/log.h>
++#include <libcamera/base/unique_fd.h>
+ 
+ #include <libcamera/controls.h>
+ 
+@@ -27,6 +28,9 @@ public:
+ 	~CameraLens();
+ 
+ 	int init();
++	int open();
++	void close();
++	bool isOpen() const;
+ 	int setFocusPosition(int32_t position);
+ 
+ 	const std::string &model() const { return model_; }
+@@ -43,6 +47,7 @@ private:
+ 
+ 	const MediaEntity *entity_;
+ 	std::unique_ptr<V4L2Subdevice> subdev_;
++	UniqueFD fd_;
+ 
+ 	std::string model_;
+ };
+diff --git a/src/libcamera/camera_lens.cpp b/src/libcamera/camera_lens.cpp
+index ccc2a6a..9a1acd7 100644
+--- a/src/libcamera/camera_lens.cpp
++++ b/src/libcamera/camera_lens.cpp
+@@ -7,8 +7,16 @@
+ 
+ #include "libcamera/internal/camera_lens.h"
+ 
++#include <errno.h>
++#include <fcntl.h>
++#include <string.h>
++#include <sys/ioctl.h>
++
++#include <linux/videodev2.h>
++
+ #include <libcamera/base/utils.h>
+ 
++#include "libcamera/internal/media_object.h"
+ #include "libcamera/internal/v4l2_subdevice.h"
+ 
+ /**
+@@ -73,24 +81,94 @@ int CameraLens::init()
+ 		return ret;
+ 
+ 	model_ = subdev_->model();
++
++	/*
++	 * Lens drivers commonly power the actuator up when their subdev node is
++	 * opened and down when the last file handle is closed (ak7375, dw9719,
++	 * ...). Keeping the node open for the whole lifetime of the camera keeps
++	 * the voice coil and its regulators powered even when no application
++	 * uses the camera, for instance while a camera monitor such as the one
++	 * in WirePlumber merely enumerates it.
++	 *
++	 * The controls have been cached above and stay available through
++	 * controls(), so close the node now. The lens is powered up again by
++	 * open(), when the camera is acquired or the lens is moved.
++	 */
++	subdev_->close();
++
+ 	return 0;
+ }
+ 
++/**
++ * \brief Open the lens subdevice node to power the lens up
++ *
++ * Pipeline handlers should call this when the camera is acquired and close()
++ * when it is released. A separate file handle is used rather than reopening
++ * the V4L2Subdevice, to avoid enumerating the controls again. Calling open()
++ * on an open lens is a no-op.
++ *
++ * \return 0 on success or a negative error code otherwise
++ */
++int CameraLens::open()
++{
++	if (fd_.isValid())
++		return 0;
++
++	fd_ = UniqueFD(::open(entity_->deviceNode().c_str(), O_RDWR | O_CLOEXEC));
++	if (!fd_.isValid()) {
++		int ret = -errno;
++		LOG(CameraLens, Error)
++			<< "Failed to open " << entity_->deviceNode() << ": "
++			<< strerror(-ret);
++		return ret;
++	}
++
++	return 0;
++}
++
++/**
++ * \brief Close the lens subdevice node to let the driver power the lens down
++ *
++ * The lens controls stay cached and available through controls().
++ */
++void CameraLens::close()
++{
++	fd_.reset();
++}
++
++/**
++ * \brief Check if the lens subdevice node is open
++ * \return True if the lens is open (and thus powered), false otherwise
++ */
++bool CameraLens::isOpen() const
++{
++	return fd_.isValid();
++}
++
+ /**
+  * \brief This function sets the focal point of the lens to a specific position.
+  * \param[in] position The focal point of the lens
+  *
+  * This function sets the value of focal point of the lens as in \a position.
++ * The lens is opened if needed, so pipeline handlers that never call open()
++ * keep working, with the lens staying powered from its first move on.
+  *
+  * \return 0 on success or -EINVAL otherwise
+  */
+ int CameraLens::setFocusPosition(int32_t position)
+ {
+-	ControlList lensCtrls(subdev_->controls());
+-	lensCtrls.set(V4L2_CID_FOCUS_ABSOLUTE, static_cast<int32_t>(position));
++	if (open() < 0)
++		return -EINVAL;
++
++	struct v4l2_control ctrl = {};
++	ctrl.id = V4L2_CID_FOCUS_ABSOLUTE;
++	ctrl.value = position;
+ 
+-	if (subdev_->setControls(&lensCtrls))
++	if (::ioctl(fd_.get(), VIDIOC_S_CTRL, &ctrl) < 0) {
++		LOG(CameraLens, Error)
++			<< "Failed to set the focus position: " << strerror(errno);
+ 		return -EINVAL;
++	}
+ 
+ 	return 0;
+ }
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 8720bc6..06f45bc 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -448,6 +448,8 @@ public:
+ 	bool swIspEnabled() const { return swIspEnabled_; }
+ 
+ protected:
++	bool acquireDevice(Camera *camera) override;
++	void releaseDevice(Camera *camera) override;
+ 	int queueRequestDevice(Camera *camera, Request *request) override;
+ 
+ private:
+@@ -1823,6 +1825,29 @@ int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlL
+ 	return 0;
+ }
+ 
++bool SimplePipelineHandler::acquireDevice(Camera *camera)
++{
++	CameraLens *lens = cameraData(camera)->sensor_->focusLens();
++
++	/*
++	 * Power the focus lens up only while an application holds the camera.
++	 * CameraLens keeps its node closed otherwise, so a camera monitor that
++	 * merely enumerates the camera does not keep the actuator powered.
++	 */
++	if (lens && lens->open() < 0)
++		LOG(SimplePipeline, Warning) << "Failed to power the focus lens up";
++
++	return true;
++}
++
++void SimplePipelineHandler::releaseDevice(Camera *camera)
++{
++	CameraLens *lens = cameraData(camera)->sensor_->focusLens();
++
++	if (lens)
++		lens->close();
++}
++
+ void SimplePipelineHandler::stopDevice(Camera *camera)
+ {
+ 	SimpleCameraData *data = cameraData(camera);

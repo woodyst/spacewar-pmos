@@ -1,0 +1,73 @@
+From 4501412f3a3e8e60c18763fb7111c78a0a5f8935 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 00:06:10 +0200
+Subject: [PATCH] input: qcom-spmi-haptics: play FF_RUMBLE at full scale and
+ advertise FF_SINE
+
+The input core rejects a periodic effect unless its waveform bit is set,
+and FF_SINE was not advertised although DIRECT_PLAY plays exactly that:
+sine effects (feedbackd uses them for the incoming call) never reached
+the driver.
+
+Rumble effects went through the input core emulation, which converts
+them into a sine at a third of the strong magnitude; together with the
+master gain userspace sets, short keyboard clicks were barely felt.
+Handle FF_RUMBLE in the driver, driving the stronger magnitude at full
+scale in DIRECT_PLAY mode.
+---
+ drivers/input/misc/qcom-spmi-haptics.c | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/input/misc/qcom-spmi-haptics.c b/drivers/input/misc/qcom-spmi-haptics.c
+index f589ac137..3e826abe1 100644
+--- a/drivers/input/misc/qcom-spmi-haptics.c
++++ b/drivers/input/misc/qcom-spmi-haptics.c
+@@ -880,6 +880,22 @@ static int haptics_upload_effect(struct input_dev *dev,
+ 	priv = &h->effects[id];
+ 
+ 	switch (effect->type) {
++	case FF_RUMBLE:
++		/*
++		 * Played here instead of through the input core emulation, which
++		 * turns a rumble into a sine at a third of its strong magnitude.
++		 * The LRA is a single actuator: drive the stronger of the two
++		 * magnitudes at full scale.
++		 */
++		haptics_clear_effect(h, priv);
++		level = max(effect->u.rumble.strong_magnitude,
++			    effect->u.rumble.weak_magnitude);
++		priv->amplitude = (u8)mult_frac(level, 255, 0xFFFF);
++		priv->length_ms = effect->replay.length;
++		priv->mode = HAPTICS_DIRECT_PLAY;
++		priv->vmax_mv = h->vmax_mv;
++		return 0;
++
+ 	case FF_CONSTANT:
+ 		haptics_clear_effect(h, priv);
+ 		level = effect->u.constant.level <= 0 ? 0 : effect->u.constant.level;
+@@ -891,8 +907,8 @@ static int haptics_upload_effect(struct input_dev *dev,
+ 
+ 	case FF_PERIODIC: {
+ 		/*
+-		 * FF_RUMBLE effect is converted to FF_PERIODIC/FF_SINE and play
+-		 * it using DIRECT_PLAY mode which drives sinusoidal waveforms
++		 * FF_SINE is played in DIRECT_PLAY mode, which drives a
++		 * sinusoidal waveform at the LRA resonance
+ 		 */
+ 		if (effect->u.periodic.waveform == FF_SINE) {
+ 			haptics_clear_effect(h, priv);
+@@ -1158,7 +1174,10 @@ static int qcom_haptics_probe(struct platform_device *pdev)
+ 	h->input = input;
+ 
+ 	input_set_capability(input, EV_FF, FF_CONSTANT);
++	input_set_capability(input, EV_FF, FF_RUMBLE);
+ 	input_set_capability(input, EV_FF, FF_PERIODIC);
++	/* the input core rejects periodic effects whose waveform is not advertised */
++	input_set_capability(input, EV_FF, FF_SINE);
+ 	input_set_capability(input, EV_FF, FF_CUSTOM);
+ 	input_set_capability(input, EV_FF, FF_GAIN);
+ 
+-- 
+2.47.3
+

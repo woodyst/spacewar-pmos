@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 16:25:58 +0200
+Subject: [PATCH] ASoC: qdsp6: q6voice: send the Rx volume gain of the step to
+ the vocproc
+
+On the Nothing Phone (1) the DSP acknowledges VSS_IVOLUME_CMD_SET_STEP for
+steps 0-6 and rejects 7 and up, but the call level does not change: steps
+6 and 0 alternating in a call, with the far end and the phone microphone
+recorded, gave the same level within 1 dB.
+
+The only parameter that changes between the steps of the vendor Rx volume
+tables is the Q13 gain of the Rx volume module (0x10ef5, parameter
+0x10e12), 3 dB per step. Send that gain in-band with SET_PARAM_V2 whenever
+the step is applied: at call setup, on a device switch and when the control
+changes during a call. Module and parameter are module parameters, and a
+zero module sends the step alone.
+---
+ sound/soc/qcom/qdsp6/q6cvp.c   | 34 +++++++++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6cvp.h   |  1 +
+ sound/soc/qcom/qdsp6/q6voice.c | 46 +++++++++++++++++++++++++++-------
+ 3 files changed, 72 insertions(+), 9 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.c b/sound/soc/qcom/qdsp6/q6cvp.c
+index 8a4b70357..e6dd56f0f 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.c
++++ b/sound/soc/qcom/qdsp6/q6cvp.c
+@@ -383,6 +383,40 @@ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step)
+ }
+ EXPORT_SYMBOL_GPL(q6cvp_set_rx_volume);
+ 
++/*
++ * The gain of the vocproc Rx volume module, sent in-band with SET_PARAM_V2: a Q13 linear gain
++ * (0x2000 = 0 dB) and a reserved word, the 4-byte payload the vendor volume tables carry for it.
++ */
++struct cvp_set_rx_gain_cmd {
++	struct apr_hdr hdr;
++	u32 mem_handle;
++	u64 mem_address;
++	u32 mem_size;
++	u32 module_id;
++	u32 param_id;
++	u16 param_size;
++	u16 reserved;
++	u16 gain;
++	u16 gain_reserved;
++} __packed;
++
++int q6cvp_set_rx_gain(struct q6voice_session *cvp, u32 module_id, u32 param_id, u16 gain)
++{
++	struct cvp_set_rx_gain_cmd cmd;
++
++	memset(&cmd, 0, sizeof(cmd));
++	cmd.hdr.pkt_size = sizeof(cmd);
++	cmd.hdr.opcode = VSS_ICOMMON_CMD_SET_PARAM_V2;
++	cmd.mem_size = sizeof(cmd) - offsetof(struct cvp_set_rx_gain_cmd, module_id);
++	cmd.module_id = module_id;
++	cmd.param_id = param_id;
++	cmd.param_size = sizeof(cmd) - offsetof(struct cvp_set_rx_gain_cmd, gain);
++	cmd.gain = gain;
++
++	return q6voice_common_send(cvp, &cmd.hdr);
++}
++EXPORT_SYMBOL_GPL(q6cvp_set_rx_gain);
++
+ static int q6cvp_probe(struct apr_device *adev)
+ {
+ 	return q6voice_common_probe(adev, Q6VOICE_SERVICE_CVP);
+diff --git a/sound/soc/qcom/qdsp6/q6cvp.h b/sound/soc/qcom/qdsp6/q6cvp.h
+index 99892a825..e1b7f43aa 100644
+--- a/sound/soc/qcom/qdsp6/q6cvp.h
++++ b/sound/soc/qcom/qdsp6/q6cvp.h
+@@ -10,6 +10,7 @@ struct q6voice_session *q6cvp_session_create(enum q6voice_path_type path,
+ 					     u16 tx_port, u16 rx_port);
+ int q6cvp_enable(struct q6voice_session *cvp, bool enable);
+ int q6cvp_set_rx_volume(struct q6voice_session *cvp, u32 step);
++int q6cvp_set_rx_gain(struct q6voice_session *cvp, u32 module_id, u32 param_id, u16 gain);
+ 
+ /* Vendor vocproc setup: channel info, topology commit, media format, calibration */
+ int q6cvp_set_channel_info(struct q6voice_session *cvp, u32 param_id,
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index c1fda9bbf..e2a3d8f45 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -30,6 +30,40 @@ static int rx_volume_step = 4;
+ module_param(rx_volume_step, int, 0644);
+ MODULE_PARM_DESC(rx_volume_step, "CVP RX volume step for voice calls");
+ 
++/*
++ * On the Nothing Phone (1) the DSP acknowledges VSS_IVOLUME_CMD_SET_STEP for steps 0-6 (and rejects 7 and
++ * up, so it does see the 7-step table) but the call level does not move: measured on real calls with the
++ * far end and the handset microphone recorded, steps 6 and 0 alternating gave the same level within 1 dB.
++ * The only parameter that changes between the steps of the vendor Rx volume tables is the gain of the Rx
++ * volume module, Q13, 3 dB per step (0x2000, 0x16a7, 0x1009, 0x0b5a, 0x0809, 0x05b0). Send that gain
++ * straight to the module along with the step. Module and parameter are tunable; 0 disables it.
++ */
++static uint rx_gain_module = 0x00010EF5;
++module_param(rx_gain_module, uint, 0644);
++MODULE_PARM_DESC(rx_gain_module, "vocproc Rx volume module that takes the per-step gain (0: step only)");
++static uint rx_gain_param = 0x00010E12;
++module_param(rx_gain_param, uint, 0644);
++MODULE_PARM_DESC(rx_gain_param, "gain parameter of rx_gain_module");
++
++static const u16 q6voice_rx_gain_q13[] = { 0x0405, 0x05b0, 0x0809, 0x0b5a, 0x1009, 0x16a7, 0x2000 };
++
++static void q6voice_apply_rx_volume(struct device *dev, struct q6voice_session *cvp, int step)
++{
++	int ret;
++
++	ret = q6cvp_set_rx_volume(cvp, step);
++	if (ret)
++		dev_info(dev, "rx volume step %d not applied: %d\n", step, ret);
++
++	if (!rx_gain_module)
++		return;
++	step = clamp(step, 0, (int)ARRAY_SIZE(q6voice_rx_gain_q13) - 1);
++	ret = q6cvp_set_rx_gain(cvp, rx_gain_module, rx_gain_param, q6voice_rx_gain_q13[step]);
++	if (ret)
++		dev_info(dev, "rx gain %#x (step %d) not applied: %d\n",
++			 q6voice_rx_gain_q13[step], step, ret);
++}
++
+ /*
+  * How a call that is already running moves to another device.
+  *
+@@ -280,9 +314,7 @@ int q6voice_set_rx_volume(unsigned int step)
+ 		mutex_lock(&p->lock);
+ 		if (p->runtime && p->runtime->started == 3 &&
+ 		    p->runtime->sessions[Q6VOICE_SERVICE_CVP]) {
+-			ret = q6cvp_set_rx_volume(p->runtime->sessions[Q6VOICE_SERVICE_CVP], step);
+-			if (ret)
+-				dev_info(v->dev, "rx volume step %u not applied: %d\n", step, ret);
++			q6voice_apply_rx_volume(v->dev, p->runtime->sessions[Q6VOICE_SERVICE_CVP], step);
+ 		}
+ 		mutex_unlock(&p->lock);
+ 	}
+@@ -842,9 +874,7 @@ static int q6voice_path_start(struct q6voice_path *p)
+ 	 * loads, so on an uncalibrated profile it is expected to fail; the
+ 	 * unmute does not depend on calibration and is expected to succeed.
+ 	 */
+-	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
+-	if (ret)
+-		dev_info(dev, "rx volume step %d not applied: %d\n", rx_volume_step, ret);
++	q6voice_apply_rx_volume(dev, cvp, rx_volume_step);
+ 
+ 	ret = q6cvs_mute(p->runtime->sessions[Q6VOICE_SERVICE_CVS], 0 /* TX */,
+ 			 q6voice_tx_muted);
+@@ -1233,9 +1263,7 @@ static void q6voice_switch_device(struct work_struct *work)
+ 	}
+ 
+ 	/* Best effort, same as when the call was set up. */
+-	ret = q6cvp_set_rx_volume(cvp, rx_volume_step);
+-	if (ret)
+-		dev_info(dev, "rx volume step not reapplied: %d\n", ret);
++	q6voice_apply_rx_volume(dev, cvp, rx_volume_step);
+ 
+ 	ret = q6mvm_start(mvm, true);
+ 	if (ret)
+-- 
+2.47.3
+

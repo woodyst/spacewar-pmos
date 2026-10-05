@@ -1,0 +1,25 @@
+# btmon-arranque.service — traza HCI desde el arranque (spacewar, 2026-09-13)
+#
+# Para ver lo que manda el WCN6750 mientras se le carga el firmware: el núcleo solo avisa
+# «unexpected event for opcode 0xfc48» (8,72 s y 10,58 s) sin enseñar el contenido, y en surya el chip
+# enumeraba en el SLIMbus justo en esa fase. hci_uart entra hacia los 8,5 s: btmon tiene que estar antes.
+#
+# Deja /var/lib/btmon-arranque/arranque.snoop (120 s) y guarda el del arranque anterior como anterior.snoop.
+# ⚠️ Lleva direcciones MAC: se queda en el móvil, nunca al git.
+[Unit]
+Description=Traza HCI desde el arranque (btmon)
+DefaultDependencies=no
+After=local-fs.target
+Before=bluetooth.service sysinit.target
+ConditionPathExists=/usr/bin/btmon
+
+[Service]
+Type=simple
+StateDirectory=btmon-arranque
+ExecStartPre=-/bin/mv -f /var/lib/btmon-arranque/arranque.snoop /var/lib/btmon-arranque/anterior.snoop
+# timeout de busybox: -s INT para que btmon cierre la traza limpio; su código al cortar no es el 124 de GNU
+ExecStart=/usr/bin/timeout -s INT 120 /usr/bin/btmon -w /var/lib/btmon-arranque/arranque.snoop
+SuccessExitStatus=124 130 143
+
+[Install]
+WantedBy=sysinit.target

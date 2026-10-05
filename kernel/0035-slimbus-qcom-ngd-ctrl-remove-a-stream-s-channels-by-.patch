@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 21:48:36 +0200
+Subject: [PATCH 35/37] slimbus: qcom-ngd-ctrl: remove a stream's channels by
+ default
+
+Without CHAN_CTRL(REMOVE) the ADSP only forgets a stream's channels when the
+NGD runtime-suspends and the bus powers down, which almost never happens
+inside a call. Moving a Bluetooth call away from the headset and back left
+both directions silent, and on the Nothing Phone (1) a SLIMBUS_7_TX capture
+started right after a failed one came back as exact zeros until the bus had
+gone idle. A modprobe option was setting it; make it the default.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ drivers/slimbus/qcom-ngd-ctrl.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/slimbus/qcom-ngd-ctrl.c b/drivers/slimbus/qcom-ngd-ctrl.c
+index cd7cf910e..eed889ffc 100644
+--- a/drivers/slimbus/qcom-ngd-ctrl.c
++++ b/drivers/slimbus/qcom-ngd-ctrl.c
+@@ -91,7 +91,14 @@
+ /* Channel control operations in SLIM_USR_MC_CHAN_CTRL, as downstream */
+ #define SLIM_CH_CTRL_REMOVE	2
+ 
+-static bool remove_channels;
++/*
++ * On by default. Without it the ADSP only forgets a stream's channels when the
++ * NGD runtime-suspends and the bus powers down, which almost never happens
++ * inside a call: moving a Bluetooth call away from the headset and back left
++ * both directions silent, and a capture started right after a failed one came
++ * back as exact zeros.
++ */
++static bool remove_channels = true;
+ module_param(remove_channels, bool, 0644);
+ MODULE_PARM_DESC(remove_channels,
+ 		 "Tell the ADSP manager to remove a stream's channels when it is disabled");
+-- 
+2.47.3
+

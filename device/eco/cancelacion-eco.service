@@ -1,0 +1,16 @@
+[Unit]
+Description=Cancelación de eco de las llamadas (topologías y calibración de fábrica en el DSP)
+# Necesita los módulos de voz (los carga el arranque de la tarjeta) y el PD de audio del ADSP servido. Si algo
+# falla, el guion deja las llamadas en paso directo: funcionan, sin cancelar el eco. En spacewar no hay
+# armar-audio (surya): colgar de multi-user no forma ciclo.
+After=hexagonrpcd-adsp-audiopd.service sound.target q6voiced.service
+Wants=hexagonrpcd-adsp-audiopd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/activar-cancelacion-eco.sh
+TimeoutStartSec=240
+
+[Install]
+WantedBy=multi-user.target

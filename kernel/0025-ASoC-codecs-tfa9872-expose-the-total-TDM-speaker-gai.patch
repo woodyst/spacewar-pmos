@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 21:50:12 +0200
+Subject: [PATCH] ASoC: codecs: tfa9872: expose the total TDM speaker gain
+ (TDMSPKG)
+
+AMPGAIN alone changes the output level by only about 4.4 dB over 90 steps on the Nothing Phone (1).
+Expose the other gain stage, TDMSPKG (TDM_CFG8 bits 9:6), as "Total Gain Volume" so it can be
+measured and used for the call volume, whose audio never reaches the CPU.
+---
+ sound/soc/codecs/tfa9872.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/sound/soc/codecs/tfa9872.c b/sound/soc/codecs/tfa9872.c
+index 7c1c6fb41..3e5f1a473 100644
+--- a/sound/soc/codecs/tfa9872.c
++++ b/sound/soc/codecs/tfa9872.c
+@@ -125,6 +125,12 @@ static const struct snd_soc_dapm_route tfa987x_dapm_routes[] = {
+  */
+ static const struct snd_kcontrol_new tfa987x_snd_controls[] = {
+ 	SOC_SINGLE("Amp Gain Volume", TFA987X_AMP_CFG, 5, 0xff, 0),
++	/*
++	 * TDMSPKG, the total speaker gain applied to the TDM input (TDM_CFG8 bits 9:6, 6 after reset).
++	 * AMPGAIN above moves the level by only ~4.4 dB over 90 steps on the Nothing Phone (1); this is the
++	 * other gain stage of the amplifier, to be measured as a call volume control.
++	 */
++	SOC_SINGLE("Total Gain Volume", TFA987X_TDM_CFG8, 6, 0xf, 0),
+ };
+ 
+ static const struct snd_soc_component_driver tfa987x_component = {
+-- 
+2.47.3
+

@@ -1,0 +1,56 @@
+# Contributor: Krassy Boykinov <kboykinov@teamcentrixx.com>
+maintainer="Krassy Boykinov <kboykinov@teamcentrixx.com>"
+pkgname=flare
+pkgver=0.22.2
+# spacewar (2026-10-05): receta de Alpine community/flare (0.20.4-r0) subida a 0.22.2 desde el git del proyecto.
+# La 0.20.4 que sirve el repositorio NO funciona (Signal cambió la API: la app no conecta); la que va es la actual.
+# pkgrel=100: que una recompilación de Alpine (r1..r99) no pise la nuestra en un `apk upgrade`; una versión nueva
+# del programa (0.23…) sí -> 48-flare.sh --ver. Los dos parches son los de Alpine, revalidados sobre 0.22.2.
+pkgrel=100
+pkgdesc="Unofficial Signal GTK client"
+url="https://gitlab.com/schmiddi-on-mobile/flare"
+arch="all"
+license="AGPL-3.0-only"
+makedepends="
+	blueprint-compiler
+	cargo-auditable
+	desktop-file-utils
+	gettext-dev
+	gtk4.0-dev
+	gtksourceview5-dev
+	libadwaita-dev
+	libsecret-dev
+	libspelling-dev
+	meson
+	openssl-dev
+	protobuf-dev
+	"
+subpackages="$pkgname-lang"
+source="https://gitlab.com/schmiddi-on-mobile/flare/-/archive/$pkgver/flare-$pkgver.tar.gz
+	0001-no-cargo-home.patch
+	0002-use-cargo-auditable.patch
+	"
+# no tests
+options="!check net"
+
+
+prepare() {
+	default_prepare
+
+	cargo fetch --target="$CTARGET" --locked
+}
+
+build() {
+	abuild-meson . output
+	meson compile -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+sha512sums="
+b1de6eb56780b5663d8c99de745985535f3fb3d0dff18d9a6d369aead0c9d61bccdaceee92d62494eafd028e89d48f49be72f175279726ccffe2e9ff3dfff989  flare-0.22.2.tar.gz
+3feb1a99cbdca84af773e7814768dd845fdcce5259977c15dab6679bcf9e9e027e514da58ae2f79b67e8c68075543a7fab7d42021afea0d5332eeb6ae9a8ea59  0001-no-cargo-home.patch
+be4bcf8f9b25b8a9e28e57945388224ee66661ab678063d43c2e8f0c42319a6e403804127e13ef3a2f64506aa024aff354ab078f5a4a5a0707c488b711f72bfe  0002-use-cargo-auditable.patch
+"

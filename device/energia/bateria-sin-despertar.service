@@ -1,0 +1,27 @@
+[Unit]
+Description=Quitar a la batería la capacidad de despertar al móvil dormido
+Documentation=file:///etc/udev/rules.d/92-bateria-sin-despertar.rules
+DefaultDependencies=no
+After=sysinit.target
+Before=sleep.target
+
+# POR QUÉ UN SERVICIO Y NO SOLO LA REGLA UDEV (spacewar, 2026-09-16):
+# la regla 92-bateria-sin-despertar.rules es correcta (udevadm verify: Success 1, Fail 0; udevadm test dice que
+# casa y aplica el atributo), pero EN EL ARRANQUE NO SE DISPARA NUNCA. El power_supply de pmic-glink aparece a
+# ~1,17 s y su uevent se pierde:
+#     synth uevent: .../qcom-battmgr-bat: failed to send uevent
+#     power_supply qcom-battmgr-bat: uevent: failed to send synthetic uevent: -11
+#     [pmOS-rd]: Failed to write 'add' to '.../uevent': Resource temporarily unavailable
+# mientras que udevd no arranca hasta los 7,0 s. `udevadm info` no muestra USEC_INITIALIZED para ese dispositivo:
+# udev nunca lo ha procesado. Sin evento no hay regla que valga, así que se escribe directamente.
+# La regla udev se deja instalada igualmente: cubre el caso de que el dispositivo se reenumere en caliente.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ExecStart con `-` delante: si el atributo no existe (dispositivo aún sin enumerar), no se falla el arranque.
+ExecStart=-/bin/sh -c 'echo disabled > /sys/class/power_supply/qcom-battmgr-bat/power/wakeup'
+ExecStart=/bin/sh -c 'echo "bateria power/wakeup = $(cat /sys/class/power_supply/qcom-battmgr-bat/power/wakeup 2>/dev/null || echo AUSENTE)"'
+
+[Install]
+WantedBy=multi-user.target

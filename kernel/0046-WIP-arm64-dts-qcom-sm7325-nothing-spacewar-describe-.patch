@@ -1,0 +1,99 @@
+From e9dbffc19ece23c487ebc39aaabeff3962c6b6a5 Mon Sep 17 00:00:00 2001
+From: Danila Tikhonov <danila@mainlining.org>
+Date: Mon, 14 Sep 2026 01:07:53 +0200
+Subject: [PATCH 46/46] WIP: arm64: dts: qcom: sm7325-nothing-spacewar:
+ describe the IMX766 main camera
+
+C-PHY Sony IMX766 main camera on CCI1 bus 1 (address 0x10), MCLK3 at
+19.2 MHz, CSIPHY3 with three trios; its second analog supply is enabled
+by GPIO 107. From the spacewar-next tree ("WIP: wide camera"); the
+factory device tree agrees on CSIPHY 3, CCI master 1, MCLK3, reset
+GPIO 78, VANA GPIO 79, VDIG GPIO 108, VIO GPIO 49 and GPIO 72.
+
+Signed-off-by: Danila Tikhonov <danila@mainlining.org>
+---
+ .../boot/dts/qcom/sm7325-nothing-spacewar.dts | 54 ++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index ad3907919..0d0117ce8 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -358,6 +358,19 @@ vreg_camw_vana_2p8: regulator-camw-vana {
+ 		vin-supply = <&vreg_bob>;
+ 	};
+ 
++	vreg_camw_vana2_2p8: regulator-camw-vana2 {
++		compatible = "regulator-fixed";
++		regulator-name = "vreg_camw_vana2_2p8";
++
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++
++		gpio = <&tlmm 107 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++
++		vin-supply = <&vreg_bob>;
++	};
++
+ 	vreg_camw_vdig_1p1: regulator-camw-vdig {
+ 		compatible = "regulator-fixed";
+ 		regulator-name = "vreg_camw_vdig_1p1";
+@@ -885,6 +898,14 @@ csiphy2_ep: endpoint {
+ 				remote-endpoint = <&camera_s5kjn1_ep>;
+ 			};
+ 		};
++
++		port@3 {
++			csiphy3_ep: endpoint {
++				data-lanes = <0 1 2>;
++				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
++				remote-endpoint = <&camera_imx766_ep>;
++			};
++		};
+ 	};
+ };
+ 
+@@ -990,7 +1011,38 @@ camu_gt24p128e: eeprom@51 {
+ 
+ &cci1_i2c1 {
+ 	/* actuator (For Wide sensor) @ 0xc */
+-	/* C-PHY sony,imx766 (Wide) @ 0x10 */
++
++	camera@10 {
++		compatible = "sony,imx766";
++		reg = <0x10>;
++
++		vana1-supply = <&vreg_camw_vana_2p8>;
++		vana2-supply = <&vreg_camw_vana2_2p8>;
++		vdig-supply = <&vreg_camw_vdig_1p1>;
++		vif-supply = <&vreg_cam_vio_1p8>;
++
++		clocks = <&camcc CAM_CC_MCLK3_CLK>;
++		assigned-clocks = <&camcc CAM_CC_MCLK3_CLK>;
++		assigned-clock-rates = <19200000>;
++
++		pwrn-gpios = <&tlmm 72 GPIO_ACTIVE_LOW>;
++		reset-gpios = <&tlmm 78 GPIO_ACTIVE_LOW>;
++
++		pinctrl-0 = <&cam_mclk3_default>;
++		pinctrl-names = "default";
++
++		orientation = <1>; // Rear facing
++		rotation = <90>;
++
++		port {
++			camera_imx766_ep: endpoint {
++				data-lanes = <1 2 3>;
++				bus-type = <MEDIA_BUS_TYPE_CSI2_CPHY>;
++				link-frequencies = /bits/ 64 <269000000 1044000000 1076000000>;
++				remote-endpoint = <&csiphy3_ep>;
++			};
++		};
++	};
+ 
+ 	camw_gt24p128e: eeprom@50 {
+ 		compatible = "giantec,gt24p128e",
+-- 
+2.47.3
+

@@ -1,0 +1,80 @@
+From 8877dab94697669705fef331c3ebc349f8ed756e Mon Sep 17 00:00:00 2001
+From: Eduardo <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 16:25:15 +0200
+Subject: [PATCH] libcamera: software_isp: Prefer udmabuf for the output
+ buffers
+
+SoftwareIsp allocates its output buffers through DmaBufAllocator, which
+opens the first provider it finds, CMA heaps first, and does not fall
+back to another provider when an allocation fails.
+
+The output buffers are only accessed by the CPU, by the GPU and by the
+consumers of the frames, none of which needs physically contiguous
+memory on platforms with an IOMMU. On devices with a small CMA area,
+however, the CMA heap is picked and quickly runs out: with the default
+16 MiB area two 1920x1080 XRGB8888 buffers (2025 pages each) take 4050
+of 4096 pages, so the camera stops working as soon as anything else
+holds a few hundred kilobytes of CMA:
+
+  DmaBufAllocator: dma-heap allocation failure for frame-1
+  cma: alloc failed, req-size: 2025 pages, ret: -16
+
+Use udmabuf, backed by regular memory, when /dev/udmabuf can be opened,
+and keep the previous provider order otherwise.
+
+Seen on the Nothing Phone (1) (sm7325), whose kernel exposes a 16 MiB
+CMA heap as /dev/dma_heap/reserved. A Xiaomi Poco X3 NFC (sm7150)
+without dma-heaps already ends up on udmabuf and does not show the
+problem.
+---
+ src/libcamera/software_isp/software_isp.cpp | 30 ++++++++++++++++++---
+ 1 file changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/src/libcamera/software_isp/software_isp.cpp b/src/libcamera/software_isp/software_isp.cpp
+index fc43827..5d3a740 100644
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -75,6 +75,32 @@ LOG_DEFINE_CATEGORY(SoftwareIsp)
+  * ready
+  */
+ 
++namespace {
++
++/*
++ * The output buffers of the software ISP are only touched by the CPU, by the
++ * GPU and by the consumers of the frames, none of which needs physically
++ * contiguous memory on platforms with an IOMMU. DmaBufAllocator picks the
++ * first provider it can open, CMA heaps first, and does not fall back when an
++ * allocation fails. On devices whose CMA area is small (16 MiB is a common
++ * default) two 1080p XRGB buffers barely fit, so the camera stops working as
++ * soon as anything else uses a few hundred kilobytes of CMA.
++ *
++ * Prefer udmabuf, backed by regular memory, when it is available, and keep the
++ * previous order otherwise.
++ */
++DmaBufAllocator::DmaBufAllocatorFlags softIspDmaBufProviders()
++{
++	if (access("/dev/udmabuf", R_OK | W_OK) == 0)
++		return DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf;
++
++	return DmaBufAllocator::DmaBufAllocatorFlag::CmaHeap |
++	       DmaBufAllocator::DmaBufAllocatorFlag::SystemHeap |
++	       DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf;
++}
++
++} /* namespace */
++
+ /**
+  * \brief Constructs SoftwareIsp object
+  * \param[in] pipe The pipeline handler in use
+@@ -85,9 +111,7 @@ LOG_DEFINE_CATEGORY(SoftwareIsp)
+ SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, CameraSensor *sensor,
+ 			 ControlInfoMap *ipaControls)
+ 	: ispWorkerThread_("SWIspWorker"),
+-	  dmaHeap_(DmaBufAllocator::DmaBufAllocatorFlag::CmaHeap |
+-		   DmaBufAllocator::DmaBufAllocatorFlag::SystemHeap |
+-		   DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf)
++	  dmaHeap_(softIspDmaBufProviders())
+ {
+ 	if (!dmaHeap_.isValid()) {
+ 		LOG(SoftwareIsp, Error) << "Failed to create DmaBufAllocator object";

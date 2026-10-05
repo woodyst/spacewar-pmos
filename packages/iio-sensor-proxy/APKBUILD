@@ -1,0 +1,52 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+# Maintainer: Natanael Copa <ncopa@alpinelinux.org>
+pkgname=iio-sensor-proxy
+pkgver=3.9
+# spacewar (2026-09-21): la receta de Alpine (3.9-r2) + 0001, que difunde a todo el bus los cambios de
+# disponibilidad (Has*). Sin él, phosh se queda sin rotación automática en cada arranque: pregunta a los ~26 s,
+# el acelerómetro del ADSP aparece a los ~86 s y el aviso solo iba a quien ya lo hubiera reclamado.
+# r100: que una recompilación de Alpine (r3..r99) no pise el parche; una 3.10 sí -> verificar-instalado.sh.
+pkgrel=100
+pkgdesc="IIO sensors to D-Bus proxy"
+url="https://gitlab.freedesktop.org/hadess/iio-sensor-proxy"
+arch="all"
+license="GPL-2.0-or-later"
+depends="dbus"
+makedepends="
+	eudev-dev
+	glib-dev
+	libgudev-dev
+	meson
+	polkit-dev
+	libssc-dev
+	"
+subpackages="$pkgname-openrc $pkgname-systemd $pkgname-udev $pkgname-dbg"
+source="https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/$pkgver/iio-sensor-proxy-$pkgver.tar.gz
+	iio-sensor-proxy.initd
+	0001-difundir-los-cambios-de-disponibilidad-de-los-sensores.patch
+	"
+
+build() {
+	abuild-meson \
+		-Db_lto=true \
+		-Dssc-support=enabled \
+		-Dsystemdsystemunitdir=/usr/lib/systemd/system \
+		. output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+
+	install -Dm755 "$srcdir"/$pkgname.initd "$pkgdir"/etc/init.d/$pkgname
+}
+
+sha512sums="
+a89c842f8db2a1a36c1c7c990434bb57fd905224459170cba2ec56e79f1272acc4cac4221937704d5e9247f957d86fde716d25e2d1ccb80d88fa643b47edfda6  iio-sensor-proxy-3.9.tar.gz
+b25df94e249ca46fe96926e5a866c20dc913fa52a2d9259fb7a3594861c6b2f246fc7fef8a21f5b021f3a71401f734ae27210137b0b1917a7daaffb5e3221f2e  iio-sensor-proxy.initd
+a4a4ff974c2d88aa792aa325c25a930f01401ebde40ae2ab32a446d8d5e5723c432250c019a2c8b42761e51c8304996c9e578b8770212eff3b7229d0c00ded53  0001-difundir-los-cambios-de-disponibilidad-de-los-sensores.patch
+"

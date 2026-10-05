@@ -1,0 +1,19 @@
+[Unit]
+Description=Supervisor de la cadena de llamada por casco Bluetooth (monta, vigila, desmonta y avisa)
+After=pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=simple
+# Hasta el 2026-09-10 esta unidad arrancaba $HOME/llamada-al-bluetooth.sh
+# (ahora en bluetooth-call/historico/). Se conserva el NOMBRE de la unidad
+# porque armar-audio-usuario.sh la reinicia al final del arranque del audio.
+ExecStart=/usr/bin/python3 -u /usr/local/bin/supervisor-llamada-bt.py
+Environment=DBUS_SESSION_BUS_ADDRESS=unix:path=%t/bus
+# actuar | observar (observar: solo anota lo que haria, no toca nada)
+Environment=SUPERVISOR_MODO=actuar
+Restart=always
+RestartSec=5
+SyslogIdentifier=supervisor-llamada-bt
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+# /etc/systemd/system/contadores-glink.service — spacewar (2026-09-15)
+# Arma las sondas que cuentan los mensajes glink del ADSP por canal (/usr/local/sbin/contadores-glink); el gancho de
+# sueño 50-despertar-y-sensores anota la diferencia en cada despertar. Ver el porqué en el propio script.
+# Lo instala scripts/99-ganchos-suspension.sh.
+[Unit]
+Description=Contadores por canal de los mensajes glink del ADSP
+After=hexagonrpcd-adsp-rootpd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/contadores-glink armar
+ExecStop=/usr/local/sbin/contadores-glink desarmar
+
+[Install]
+WantedBy=multi-user.target

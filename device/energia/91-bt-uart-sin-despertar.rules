@@ -1,0 +1,24 @@
+# /etc/udev/rules.d/91-bt-uart-sin-despertar.rules — spacewar (2026-09-14)
+#
+# El despertar del UART del Bluetooth aborta las suspensiones profundas del sistema. Es la misma causa que en
+# surya (suria/parches/energia/91-bt-uart-sin-despertar.rules, 2026-08-16), con otro UART.
+#
+# Medido en spacewar con el kernel r131 (PM_SLEEP_DEBUG) y `pm_test=processors`:
+#     PM: noirq suspend of devices complete
+#     PM: Triggering wakeup from IRQ 151        <- durante la suspensión tardía, sin tráfico
+#     Disabling non-boot CPUs ... Wakeup pending. Abort CPU freeze
+#     /sys/power/pm_wakeup_irq = 151 = msmgpio 31 Edge 99c000.serial:wakeup
+# y 99c000.serial es el UART del WCN6750 (…/99c000.serial/…/serial0-0/bluetooth/hci0).
+#
+# Consecuencias vistas antes de saberlo: TODAS las suspensiones de gsd-power (6 desde el 13-09) abortan; systemd
+# cae a s2idle, que despierta al segundo, y en 2 de ellas phosh murió al despertar (sesión cerrada, 11:15 y 12:28).
+#
+# ⚠️ COSTE: el Bluetooth no puede despertar al móvil dormido (p. ej. un botón del casco). Las llamadas entrantes
+#    despiertan por el módem, otro camino. En surya el usuario lo aceptó como solución («me da igual que el
+#    bluetooth no despierte el móvil, si lo necesito aprieto el botón»).
+# Revertir en caliente:
+#     echo enabled > /sys/devices/platform/soc@0/9c0000.geniqup/99c000.serial/power/wakeup
+#
+# Dos líneas: en `add` el atributo power/wakeup todavía no existe (lo crea el driver al sondear); en `bind` sí.
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="99c000.serial", ATTR{power/wakeup}="disabled"
+ACTION=="add",  SUBSYSTEM=="platform", KERNEL=="99c000.serial", ATTR{power/wakeup}="disabled"

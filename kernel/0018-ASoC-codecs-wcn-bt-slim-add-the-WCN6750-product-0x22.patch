@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 19:59:47 +0200
+Subject: [PATCH 18/20] ASoC: codecs: wcn-bt-slim: add the WCN6750 (product
+ 0x221)
+
+The Nothing Phone (1) (SM7325) routes Bluetooth SCO over SLIMbus like surya. Its stock device tree
+describes the chip on slim@3ac0000 as elemental address [00 01 21 02 17 02] and the interface device
+as [00 00 21 02 17 02]: manufacturer 0x217, product 0x221, device index 1 and 0.
+---
+ sound/soc/codecs/wcn-bt-slim.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/sound/soc/codecs/wcn-bt-slim.c b/sound/soc/codecs/wcn-bt-slim.c
+index f7aee9794..887b339f2 100644
+--- a/sound/soc/codecs/wcn-bt-slim.c
++++ b/sound/soc/codecs/wcn-bt-slim.c
+@@ -1452,6 +1452,8 @@ static void wcn_bt_slim_debugfs_init(void)
+ static const struct slim_device_id wcn_bt_slim_id[] = {
+ 	{ 0x217, 0x220, 0x0, 0x0 },	/* interface device */
+ 	{ 0x217, 0x220, 0x1, 0x0 },	/* ported generic device */
++	{ 0x217, 0x221, 0x0, 0x0 },	/* WCN6750 interface device */
++	{ 0x217, 0x221, 0x1, 0x0 },	/* WCN6750 ported generic device */
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(slimbus, wcn_bt_slim_id);
+-- 
+2.47.3
+

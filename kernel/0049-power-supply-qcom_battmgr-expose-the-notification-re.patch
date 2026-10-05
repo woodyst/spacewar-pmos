@@ -1,0 +1,259 @@
+From c43c4892d8a119cfd48e2bf30c29dce492abf56a Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Tue, 15 Sep 2026 18:57:36 +0200
+Subject: [PATCH] power: supply: qcom_battmgr: expose the notification request
+ fields
+
+The firmware's notification request carries battery_id, power_state,
+low_capacity and high_capacity, the fields of Windows' BATTERY_WAIT_STATUS
+(capacity in mWh; power state bits online, discharging, charging, critical).
+The driver always sends them as zero. On the Nothing Phone (1) the battery
+manager then notifies every 1 % of state of charge, and each notification
+wakes the system from suspend: 5 of 7 battery wakes on 2026-09-15 matched a
+1 % drop, about one every 10-13 minutes asleep.
+
+Add module parameters, all defaulting to the current behaviour:
+
+ - notif_power_state, notif_low_capacity, notif_high_capacity: the request
+   sent when the service comes up, and notif_apply to send it right away,
+   so the firmware's handling can be tested while awake;
+ - suspend_notif and suspend_*: a different request sent on
+   PM_SUSPEND_PREPARE; on PM_POST_SUSPEND the awake request is restored and
+   power_supply_changed() reports what changed meanwhile;
+ - notif_counts: notifications received per type, to tell which one woke
+   the system.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ drivers/power/supply/qcom_battmgr.c | 173 +++++++++++++++++++++++++++-
+ 1 file changed, 167 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index 490137a..4127634 100644
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -13,6 +13,7 @@
+ #include <linux/property.h>
+ #include <linux/soc/qcom/pdr.h>
+ #include <linux/soc/qcom/pmic_glink.h>
++#include <linux/suspend.h>
+ #include <linux/math.h>
+ #include <linux/units.h>
+ 
+@@ -333,6 +334,9 @@ struct qcom_battmgr {
+ 
+ 	struct work_struct enable_work;
+ 
++	struct notifier_block pm_nb;
++	bool suspend_request_sent;
++
+ 	/*
+ 	 * @lock is used to prevent concurrent power supply requests to the
+ 	 * firmware, as it then stops responding.
+@@ -360,6 +364,90 @@ static int qcom_battmgr_request(struct qcom_battmgr *battmgr, void *data, size_t
+ 	return battmgr->error;
+ }
+ 
++/*
++ * Notification request fields. The firmware takes battery_id, power_state,
++ * low_capacity and high_capacity, the fields of Windows' BATTERY_WAIT_STATUS
++ * (capacity in mWh, power state bits: online, discharging, charging,
++ * critical). The driver always sent them as zero, which asks for every
++ * change: on the Nothing Phone (1) every 1 % of state of charge wakes the
++ * system from suspend. Expose them so the firmware's handling can be tested
++ * and a narrower request can be used while suspended.
++ */
++static uint notif_power_state;
++module_param(notif_power_state, uint, 0644);
++MODULE_PARM_DESC(notif_power_state, "power_state of the notification request while awake");
++static uint notif_low_capacity;
++module_param(notif_low_capacity, uint, 0644);
++MODULE_PARM_DESC(notif_low_capacity, "low_capacity of the notification request while awake");
++static uint notif_high_capacity;
++module_param(notif_high_capacity, uint, 0644);
++MODULE_PARM_DESC(notif_high_capacity, "high_capacity of the notification request while awake");
++
++static bool suspend_notif;
++module_param(suspend_notif, bool, 0644);
++MODULE_PARM_DESC(suspend_notif, "send the suspend_* notification request before suspending");
++static uint suspend_power_state;
++module_param(suspend_power_state, uint, 0644);
++MODULE_PARM_DESC(suspend_power_state, "power_state of the notification request while suspended");
++static uint suspend_low_capacity;
++module_param(suspend_low_capacity, uint, 0644);
++MODULE_PARM_DESC(suspend_low_capacity, "low_capacity of the notification request while suspended");
++static uint suspend_high_capacity;
++module_param(suspend_high_capacity, uint, 0644);
++MODULE_PARM_DESC(suspend_high_capacity, "high_capacity of the notification request while suspended");
++
++/* bat property, bat status, bat info, bat charging state, usb, wireless, other */
++static uint notif_counts[7];
++module_param_array(notif_counts, uint, NULL, 0444);
++MODULE_PARM_DESC(notif_counts, "notifications received: bat_property,bat_status,bat_info,bat_charging_state,usb,wls,other");
++
++static struct qcom_battmgr *qcom_battmgr_instance;
++
++static int qcom_battmgr_request_notifications(struct qcom_battmgr *battmgr, u32 power_state,
++					      u32 low_capacity, u32 high_capacity)
++{
++	struct qcom_battmgr_enable_request req = {
++		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
++		.hdr.type = cpu_to_le32(PMIC_GLINK_NOTIFY),
++		.hdr.opcode = cpu_to_le32(BATTMGR_REQUEST_NOTIFICATION),
++		.power_state = cpu_to_le32(power_state),
++		.low_capacity = cpu_to_le32(low_capacity),
++		.high_capacity = cpu_to_le32(high_capacity),
++	};
++	int ret;
++
++	mutex_lock(&battmgr->lock);
++	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
++	mutex_unlock(&battmgr->lock);
++
++	dev_dbg(battmgr->dev, "notification request power_state=%#x low=%u high=%u: %d\n",
++		power_state, low_capacity, high_capacity, ret);
++
++	return ret;
++}
++
++static int notif_apply_set(const char *val, const struct kernel_param *kp)
++{
++	struct qcom_battmgr *battmgr = qcom_battmgr_instance;
++	int ret;
++
++	if (!battmgr || !battmgr->service_up)
++		return -ENODEV;
++
++	ret = qcom_battmgr_request_notifications(battmgr, notif_power_state,
++						 notif_low_capacity, notif_high_capacity);
++	dev_info(battmgr->dev, "notification request power_state=%#x low=%u high=%u: %d\n",
++		 notif_power_state, notif_low_capacity, notif_high_capacity, ret);
++
++	return ret;
++}
++
++static const struct kernel_param_ops notif_apply_ops = {
++	.set = notif_apply_set,
++};
++module_param_cb(notif_apply, &notif_apply_ops, NULL, 0200);
++MODULE_PARM_DESC(notif_apply, "write anything to send the notif_* request now");
++
+ static int qcom_battmgr_request_property(struct qcom_battmgr *battmgr, int opcode,
+ 					 int property, u32 value)
+ {
+@@ -1201,6 +1289,31 @@ static void qcom_battmgr_notification(struct qcom_battmgr *battmgr,
+ 
+ 	notification = le32_to_cpu(msg->notification);
+ 	notification &= 0xff;
++	switch (notification) {
++	case NOTIF_BAT_PROPERTY:
++		notif_counts[0]++;
++		break;
++	case NOTIF_BAT_STATUS:
++		notif_counts[1]++;
++		break;
++	case NOTIF_BAT_INFO:
++		notif_counts[2]++;
++		break;
++	case NOTIF_BAT_CHARGING_STATE:
++		notif_counts[3]++;
++		break;
++	case NOTIF_USB_PROPERTY:
++		notif_counts[4]++;
++		break;
++	case NOTIF_WLS_PROPERTY:
++		notif_counts[5]++;
++		break;
++	default:
++		notif_counts[6]++;
++		break;
++	}
++	dev_dbg(battmgr->dev, "notification %#x\n", notification);
++
+ 	switch (notification) {
+ 	case NOTIF_BAT_INFO:
+ 		battmgr->info.valid = false;
+@@ -1586,18 +1699,57 @@ static void qcom_battmgr_callback(const void *data, size_t len, void *priv)
+ static void qcom_battmgr_enable_worker(struct work_struct *work)
+ {
+ 	struct qcom_battmgr *battmgr = container_of(work, struct qcom_battmgr, enable_work);
+-	struct qcom_battmgr_enable_request req = {
+-		.hdr.owner = cpu_to_le32(PMIC_GLINK_OWNER_BATTMGR),
+-		.hdr.type = cpu_to_le32(PMIC_GLINK_NOTIFY),
+-		.hdr.opcode = cpu_to_le32(BATTMGR_REQUEST_NOTIFICATION),
+-	};
+ 	int ret;
+ 
+-	ret = qcom_battmgr_request(battmgr, &req, sizeof(req));
++	ret = qcom_battmgr_request_notifications(battmgr, notif_power_state,
++						 notif_low_capacity, notif_high_capacity);
+ 	if (ret)
+ 		dev_err(battmgr->dev, "failed to request power notifications\n");
+ }
+ 
++static int qcom_battmgr_pm_notify(struct notifier_block *nb, unsigned long action, void *data)
++{
++	struct qcom_battmgr *battmgr = container_of(nb, struct qcom_battmgr, pm_nb);
++	int ret;
++
++	switch (action) {
++	case PM_SUSPEND_PREPARE:
++		if (!suspend_notif || !battmgr->service_up)
++			break;
++		ret = qcom_battmgr_request_notifications(battmgr, suspend_power_state,
++							 suspend_low_capacity,
++							 suspend_high_capacity);
++		battmgr->suspend_request_sent = !ret;
++		if (ret)
++			dev_warn(battmgr->dev, "failed to send the suspend notification request: %d\n", ret);
++		break;
++	case PM_POST_SUSPEND:
++		if (!battmgr->suspend_request_sent)
++			break;
++		battmgr->suspend_request_sent = false;
++		if (!battmgr->service_up)
++			break;
++		ret = qcom_battmgr_request_notifications(battmgr, notif_power_state,
++							 notif_low_capacity, notif_high_capacity);
++		if (ret)
++			dev_warn(battmgr->dev, "failed to restore the notification request: %d\n", ret);
++		/* report whatever changed while the narrower request was active */
++		power_supply_changed(battmgr->bat_psy);
++		break;
++	}
++
++	return NOTIFY_DONE;
++}
++
++static void qcom_battmgr_unregister_pm_notifier(void *data)
++{
++	struct qcom_battmgr *battmgr = data;
++
++	unregister_pm_notifier(&battmgr->pm_nb);
++	if (qcom_battmgr_instance == battmgr)
++		qcom_battmgr_instance = NULL;
++}
++
+ static void qcom_battmgr_pdr_notify(void *priv, int state)
+ {
+ 	struct qcom_battmgr *battmgr = priv;
+@@ -1718,6 +1870,15 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 	if (IS_ERR(battmgr->client))
+ 		return PTR_ERR(battmgr->client);
+ 
++	battmgr->pm_nb.notifier_call = qcom_battmgr_pm_notify;
++	ret = register_pm_notifier(&battmgr->pm_nb);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to register PM notifier\n");
++	ret = devm_add_action_or_reset(dev, qcom_battmgr_unregister_pm_notifier, battmgr);
++	if (ret)
++		return ret;
++	qcom_battmgr_instance = battmgr;
++
+ 	pmic_glink_client_register(battmgr->client);
+ 
+ 	return 0;
+-- 
+2.43.0
+

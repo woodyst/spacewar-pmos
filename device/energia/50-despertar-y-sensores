@@ -1,0 +1,264 @@
+#!/bin/sh
+# /usr/lib/systemd/system-sleep/50-despertar-y-sensores — spacewar (2026-09-14)
+#
+# Gancho de systemd-sleep con dos trabajos:
+#
+# 1. PARAR iio-sensor-proxy MIENTRAS DUERME. Mantiene abierto un flujo de sensores con el ADSP: un mensaje QRTR cada
+#    ~60 ms (qcom_smd_qrtr_callback) que sigue llegando con la pantalla apagada y DESPIERTA al SoC en cuanto se
+#    duerme («Timekeeping suspended for 0.019 seconds»). Con el servicio parado el flujo cesa y la suspensión real
+#    duerme de verdad. Se para antes de dormir y se vuelve a arrancar al despertar, sin esperar (--no-block).
+#    ⚠️ Coste: tras despertar, los sensores tardan un momento en volver (brillo automático, proximidad).
+#
+# 2. DEJAR CONSTANCIA DE QUÉ LO DESPIERTA. Antes de dormir guarda /proc/interrupts; al despertar escribe en el
+#    diario (etiqueta «despertar») las interrupciones que subieron mientras dormía y /sys/power/pm_wakeup_irq.
+#    ⚠️ El recuento incluye también las interrupciones de suspender y reanudar los dispositivos (UFS, pantalla,
+#    RPMh…): se quitan las más ruidosas, pero la que despierta hay que buscarla entre las que quedan.
+#    Leer: journalctl -t despertar
+#
+# 3. MENSAJES GLINK DEL ADSP POR CANAL (2026-09-15). Si /usr/local/sbin/contadores-glink tiene sus sondas armadas
+#    (contadores-glink.service), anota cuántos mensajes llegaron por QRTR, APR, FastRPC y pmic_glink entre antes y
+#    después de dormir; con más de 500 lanza su «detalle» (3 s con cabeceras). Motivo: la avalancha de ~200/s del
+#    2026-09-15 que no dejaba dormir y acabó en cuelgue; así la próxima queda identificada en el diario.
+#
+# systemd-sleep llama con $1 = pre|post y $2 = suspend|hibernate|hybrid-sleep|suspend-then-hibernate.
+set -u
+ANTES=/run/despertar-interrupciones.antes
+FUENTES=/run/despertar-fuentes.antes
+GLINK=/run/despertar-glink.antes
+RED=/run/despertar-red.antes
+CARGA=/run/despertar-carga.antes
+CONTADORES=/usr/local/sbin/contadores-glink
+
+paquetes() {
+	# «interfaz rx tx» de las interfaces con red de verdad (Wi-Fi y las del módem): cuánto tráfico mueve cada despertar
+	for i in wlan0 qmapmux0.0 qmapmux0.1; do
+		[ -d /sys/class/net/$i ] || continue
+		printf '%s %s %s\n' "$i" "$(cat /sys/class/net/$i/statistics/rx_packets 2>/dev/null)" "$(cat /sys/class/net/$i/statistics/tx_packets 2>/dev/null)"
+	done
+}
+
+suma() {
+	# «nombre total» por interrupción, sumando las CPU
+	awk 'NR > 1 { n = 0; for (i = 2; i <= NF; i++) { if ($i ~ /^[0-9]+$/) n += $i; else break }
+	              $1 = $1; sub(/^[^ ]+ /, ""); gsub(/^[0-9 ]+/, ""); print n "\t" $0 }' /proc/interrupts
+}
+
+boton() {
+	# pulsaciones del botón de encendido (IRQ pmic_pwrkey), sumando las CPU
+	awk '/pmic_pwrkey/ { n = 0; for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+$/) n += $i; else break; print n }' /proc/interrupts
+}
+
+cancelar_suspension() {
+	# BOTÓN DURANTE LA ESPERA (2026-09-15 15:44): la espera de más abajo corre con la sesión ya congelada (systemd-sleep
+	# congela user.slice antes de los ganchos): el usuario pulsó el botón dos veces, la pantalla no reaccionó y el móvil
+	# se durmió igual; parecía colgado ~17 s. Con wakeup_count escrito, el kernel comprueba justo antes de dormir si hay
+	# eventos de despertar pendientes o en curso, y un wake_lock cuenta como uno en curso: la suspensión aborta en
+	# milisegundos (EBUSY) y systemd-sleep descongela la sesión. SuspendState=mem (sleep-solo-deep.conf): no cae a s2idle.
+	# ⚠️ Leer wakeup_count se bloquea mientras haya eventos en curso: con plazo.
+	c=$(timeout 1 cat /sys/power/wakeup_count 2>/dev/null)
+	if [ -n "$c" ] && echo "$c" > /sys/power/wakeup_count 2>/dev/null; then
+		echo "despertar-boton 5000000000" > /sys/power/wake_lock 2>/dev/null
+		logger -t despertar "botón pulsado durante la espera: cancelo la suspensión"
+	else
+		logger -t despertar "botón pulsado durante la espera, pero no puedo cancelar la suspensión (wakeup_count ocupado)"
+	fi
+	# por si systemd-sleep no ejecuta «post» cuando la suspensión falla: deshacer ya lo que hizo «pre»
+	if [ -e /run/despertar-sensores-parados ]; then
+		systemctl --no-block start iio-sensor-proxy.service 2>/dev/null
+		rm -f /run/despertar-sensores-parados
+	fi
+}
+
+fuentes() {
+	# «eventos nombre» por fuente de despertar: la que sube dormido sin pm_wakeup_irq es la sospechosa (2026-09-14)
+	for w in /sys/class/wakeup/wakeup*; do
+		printf '%s\t%s\n' "$(cat "$w/event_count" 2>/dev/null)" "$(cat "$w/name" 2>/dev/null)"
+	done
+}
+
+case "${1:-}" in
+pre)
+	# cancelar un «volver a dormir» o un «apagar pantalla» pendientes (si es él quien suspende, ya ha hecho su trabajo)
+	systemctl --no-block stop volver-a-dormir.timer pantalla-apagada.timer 2>/dev/null
+	suma > "$ANTES" 2>/dev/null
+	fuentes > "$FUENTES" 2>/dev/null
+	rm -f "$GLINK"
+	if [ -x $CONTADORES ]; then
+		v=$($CONTADORES leer)
+		[ -n "$v" ] && echo "$v" > "$GLINK"
+		$CONTADORES qrtr-limpiar
+	fi
+	# QUIÉN DESPIERTA (2026-09-17): arrancar aquí la grabación de la instancia despertar-causa y pararla en «post».
+	# Lleva irq:irq_handler_entry, que con el móvil despierto llena el búfer en segundos; grabando solo el sueño,
+	# el búfer conserva exactamente lo que interesa: LA PRIMERA INTERRUPCIÓN ATENDIDA AL REANUDAR. En suspensión
+	# profunda quien despierta el SoC es el PDC, por debajo de Linux, y si la interrupción no estaba marcada como
+	# fuente de despertar el núcleo no anota la causa (pm_wakeup_irq vacío en 26 de 34 despertares). La arma
+	# pruebas/energia/quien-despierta.sh; si no está armada, esto no hace nada.
+	CAUSA=/sys/kernel/tracing/instances/despertar-causa
+	[ -d "$CAUSA" ] || CAUSA=/sys/kernel/debug/tracing/instances/despertar-causa
+	if [ -w "$CAUSA/tracing_on" ]; then
+		echo > "$CAUSA/trace" 2>/dev/null
+		echo 1 > "$CAUSA/tracing_on" 2>/dev/null
+	fi
+	paquetes > "$RED" 2>/dev/null
+	# Interruptor para medir con los sensores activos: `sudo touch /run/despertar-sin-parar-sensores` (se borra al
+	# reiniciar). Solo se vuelve a arrancar al despertar lo que se paró aquí.
+	rm -f /run/despertar-sensores-parados
+	if [ ! -e /run/despertar-sin-parar-sensores ] && systemctl -q is-active iio-sensor-proxy.service; then
+		systemctl stop iio-sensor-proxy.service 2>/dev/null && touch /run/despertar-sensores-parados
+	fi
+	# ESPERA ANTES DE DORMIR CON DATOS MÓVILES (2026-09-14). NetworkManager corta el bearer de datos en cada
+	# suspensión y el módem avisa ~10,6 s después; si el SoC ya duerme, ese aviso lo despierta (sin pm_wakeup_irq) y
+	# con datos no llegaba a dormir nunca. Esperando 15 s el aviso llega despierto: medido con 10 s, duerme hasta la
+	# alarma y gasta lo mismo que sin datos (56 frente a 55 mA). Requiere además el NetworkManager parcheado
+	# (packages/networkmanager), que ya no tumba el bearer IMS. Solo espera si la radio móvil está activada y hay un
+	# perfil gsm con conexión automática: sin datos se suspende al instante.
+	# Forzar otro valor (0 = sin espera): `echo N | sudo tee /run/despertar-espera-modem` (se borra al reiniciar).
+	n=""
+	if [ -r /run/despertar-espera-modem ]; then
+		n=$(cat /run/despertar-espera-modem)
+	elif [ "$(timeout 3 nmcli -t radio wwan 2>/dev/null)" = enabled ] \
+		&& timeout 3 nmcli -t -f TYPE,AUTOCONNECT connection show 2>/dev/null | grep -q '^gsm:yes$'; then
+		n=15
+	fi
+	# justo antes de dormir: hora y carga, para medir el consumo DEL SUEÑO sin mezclar los ratos despiertos (2026-09-16:
+	# los tramos entre despertares daban 172 mA con 18 min despierto dentro)
+	echo "$(date +%s) $(cat /sys/class/power_supply/qcom-battmgr-bat/charge_counter 2>/dev/null)" > "$CARGA" 2>/dev/null
+	case "$n" in
+		''|0|*[!0-9]*) ;;
+		*)
+			logger -t despertar "espera de $n s antes de dormir (avisos del módem)"
+			# en cuartos de segundo, mirando el botón: si lo pulsan, no se duerme (cancelar_suspension)
+			# Probar sin pulsar: `sudo touch /run/despertar-simular-boton` antes de suspender (se borra al usarse).
+			b0=$(boton); i=0
+			while [ $i -lt $((n * 4)) ]; do
+				sleep 0.25; i=$((i + 1))
+				if [ "$(boton)" != "$b0" ] || [ -e /run/despertar-simular-boton ]; then
+					rm -f /run/despertar-simular-boton
+					cancelar_suspension
+					break
+				fi
+			done
+			;;
+	esac
+	;;
+post)
+	# LO PRIMERO DE TODO (2026-09-17): parar la grabación de despertar-causa. Este gancho corre a los 51-65 ms de
+	# «System returned from sleep», así que a esta altura el búfer contiene el sueño entero y solo las PRIMERAS
+	# interrupciones atendidas al reanudar: justo lo que identifica al causante. Si se dejara grabando, el ruido de
+	# irq_handler_entry con el móvil despierto lo llenaría en segundos. Leer con quien-despierta.sh leer.
+	CAUSA=/sys/kernel/tracing/instances/despertar-causa
+	[ -d "$CAUSA" ] || CAUSA=/sys/kernel/debug/tracing/instances/despertar-causa
+	[ -w "$CAUSA/tracing_on" ] && echo 0 > "$CAUSA/tracing_on" 2>/dev/null
+	echo despertar-boton > /sys/power/wake_unlock 2>/dev/null
+	# Consumo medio DORMIDO según el propio medidor, leído al instante: time_to_empty_avg es una media del firmware y a
+	# los ~20 s despierto ya refleja otra vez el consumo despierto. charge_counter solo baja a saltos de ~8 mAh, no
+	# sirve para ventanas cortas. mA medios ≈ charge_counter (µAh) / time_to_empty_avg (s) * 3,6.
+	# ⚠️ Es el medidor del teléfono (en surya ~2,5× menos que un medidor externo): para comparar configuraciones.
+	Bat=/sys/class/power_supply/qcom-battmgr-bat
+	cc=$(cat $Bat/charge_counter 2>/dev/null); tte=$(cat $Bat/time_to_empty_avg 2>/dev/null)
+	if [ -n "$cc" ] && [ "${tte:-0}" -gt 0 ] 2>/dev/null; then
+		logger -t consumo -p user.info "ma_medio=$((cc * 36 / tte / 10)) charge_counter=$cc time_to_empty_avg=$tte capacidad=$(cat $Bat/capacity 2>/dev/null)"
+	fi
+	# consumo del sueño: desde la marca de antes de suspender hasta ahora (incluye suspender y reanudar, nada más)
+	if [ -r "$CARGA" ]; then
+		read t_antes c_antes < "$CARGA"
+		t_ahora=$(date +%s); c_ahora=$(cat /sys/class/power_supply/qcom-battmgr-bat/charge_counter 2>/dev/null)
+		if [ -n "$c_ahora" ] && [ "${t_ahora:-0}" -gt "${t_antes:-0}" ] 2>/dev/null; then
+			# con cargador la cifra no vale (la carga sube): se marca para no colarla en los análisis
+			enchufe=""
+			[ "$(cat /sys/class/power_supply/qcom-battmgr-usb/online 2>/dev/null)" = 1 ] && enchufe=" (ENCHUFADO: no vale)"
+			logger -t consumo -p user.info "$(awk -v ta=$t_antes -v ca=$c_antes -v th=$t_ahora -v ch=$c_ahora -v e="$enchufe" \
+				'BEGIN { printf "sueño: %d s, %.1f mAh, %.0f mA%s", th - ta, (ca - ch) / 1000, (ca - ch) / 1000 / ((th - ta) / 3600), e }')"
+		fi
+		rm -f "$CARGA"
+	fi
+	irq=$(cat /sys/power/pm_wakeup_irq 2>/dev/null)
+	if [ -r "$ANTES" ]; then
+		# ⚠️ logger ignora la entrada estándar si también recibe un mensaje: se monta el mensaje entero
+		lista=$(suma | awk -F '\t' 'NR == FNR { a[$2] = $1; next } ($2 in a) && $1 > a[$2] { print $1 - a[$2] "\t" $2 }' \
+				"$ANTES" - \
+			| grep -v -E 'IPI|arch_timer|arch_mem_timer|ufshcd|dsi_isr|msm_mdss|18200000.rsc|ce[0-9]|pmu|DP_EXT' \
+			| sort -rn | head -15 | tr '\t' ' ' | tr '\n' ';')
+		logger -t despertar -p user.info "(${2:-?}) pm_wakeup_irq=${irq:-ninguna}; subieron: ${lista:-nada}"
+		rm -f "$ANTES"
+	fi
+	if [ -r "$FUENTES" ]; then
+		subieron=$(fuentes | awk -F '\t' 'NR == FNR { a[$2] = $1; next } ($2 in a) && $1 > a[$2] { print $2 " +" $1 - a[$2] }' \
+				"$FUENTES" - | tr '\n' ';')
+		logger -t despertar -p user.info "(${2:-?}) fuentes de despertar con eventos: ${subieron:-ninguna}"
+		rm -f "$FUENTES"
+	fi
+	if [ -r "$GLINK" ] && [ -x $CONTADORES ]; then
+		glink=$($CONTADORES leer | awk 'NR == FNR { for (i = 1; i <= NF; i++) { split($i, kv, "="); a[kv[1]] = kv[2] }; next }
+			{ for (i = 1; i <= NF; i++) { split($i, kv, "="); d = kv[2] - a[kv[1]]; t += d; printf "%s=+%d ", kv[1], d }
+			  printf "total=%d", t }' "$GLINK" -)
+		logger -t despertar -p user.info "(${2:-?}) glink ADSP por canal: ${glink:-sin datos}"
+		t=${glink##*total=}
+		if [ "${t:-0}" -gt 500 ] 2>/dev/null; then
+			systemctl reset-failed glink-detalle.service 2>/dev/null
+			systemd-run --no-block --unit=glink-detalle --description="Detalle de la avalancha glink del ADSP" \
+				$CONTADORES detalle >/dev/null 2>&1
+		fi
+		rm -f "$GLINK"
+	fi
+	# tráfico de red del rato dormido + el despertar: si el Wi-Fi y los datos se cortan al dormir, esto debe salir casi
+	# a cero y descarta que un programa (mensajería…) gaste mientras duerme (2026-09-16)
+	if [ -r "$RED" ]; then
+		red=$(paquetes | awk 'NR == FNR { a[$1] = $2 " " $3; next }
+			{ split(a[$1], v, " "); if (v[1] != "") printf "%s +%d/+%d ", $1, $2 - v[1], $3 - v[2] }' "$RED" -)
+		logger -t despertar -p user.info "(${2:-?}) paquetes rx/tx desde antes de dormir: ${red:-nada}"
+		rm -f "$RED"
+	fi
+	# qué mensaje QRTR llegó primero al volver (nodo 0 = módem): identifica los despertares del módem (2026-09-15 21:20)
+	# ⚠️ DIFERIDO 3 s (2026-09-17): leerlo aquí NO SERVÍA. Medido en la noche del 16→17: este gancho escribe a los
+	# 51-65 ms de «System returned from sleep», pero el primer paquete QRTR no pasa por qrtr_endpoint_post hasta
+	# +689 ms. Leía diez veces antes de que existiera el dato: 28 de 34 despertares salían sin línea, y los 6 que
+	# salían se interpretaron como «el módem despierta» sin base. Se lanza en una unidad aparte, como pantalla-apagada.
+	if [ -x $CONTADORES ]; then
+		systemctl stop qrtr-despertar.timer qrtr-despertar.service 2>/dev/null
+		systemctl reset-failed qrtr-despertar.timer qrtr-despertar.service 2>/dev/null
+		systemd-run --no-block --unit=qrtr-despertar --on-active=3 \
+			--description="Primeros QRTR tras un despertar (diferido: llegan a +0,7 s)" \
+			/bin/sh -c "q=\$($CONTADORES qrtr-leer); [ -n \"\$q\" ] && logger -t despertar -p user.info \"(${2:-?}) primeros QRTR al volver: \$q\" || logger -t despertar -p user.info \"(${2:-?}) primeros QRTR al volver: NINGUNO en 3 s\"" \
+			>/dev/null 2>&1
+	fi
+	if [ -e /run/despertar-sensores-parados ]; then
+		systemctl --no-block start iio-sensor-proxy.service 2>/dev/null
+		rm -f /run/despertar-sensores-parados
+	fi
+	# VOLVER A DORMIR (2026-09-14): tras un despertar automático gsd-power no vuelve a suspender (35 y 81 min despierto
+	# con la pantalla apagada). A los 15 s, /usr/local/sbin/volver-a-dormir.sh suspende de nuevo si sigue con batería,
+	# sin llamada, con la pantalla apagada y sin inhibidores de aplicaciones. Si el usuario lo usa, no hace nada.
+	# 60 y no 300 (decisión del usuario, 22:45): los 300 s eran los de gsd-power, pensados para inactividad del
+	# usuario; tras un despertar automático con la pantalla apagada cada minuto despierto cuesta ~150 mA.
+	# 15 y no 60 (decisión del usuario, 2026-09-15 19:00): los despertares automáticos son de la batería del ADSP (cada
+	# 1 % de carga) y del módem (rmtfs, avisos WDS), uno cada pocos minutos dormido; cada uno costaba 60 s despierto más
+	# los 15 s de espera por el módem. Los avisos que llegan al despertar ya están dentro de esos 15 s.
+	if [ -x /usr/local/sbin/volver-a-dormir.sh ]; then
+		# contadores del táctil y los botones al despertar: si suben, alguien lo está usando (2026-09-14: la pantalla no
+		# sirve, phosh la enciende sola al despertar y la apaga a los 300 s de inactividad)
+		awk '/fts_ts|pmic_pwrkey|pmic_resin|Volume up/ { n = 0; for (i = 2; i <= NF; i++) if ($i ~ /^[0-9]+$/) n += $i; else break
+			t += n } END { print t + 0 }' /proc/interrupts > /run/volver-a-dormir.entrada 2>/dev/null
+		systemctl stop volver-a-dormir.timer volver-a-dormir.service 2>/dev/null
+		systemctl reset-failed volver-a-dormir.timer volver-a-dormir.service 2>/dev/null
+		systemd-run --no-block --unit=volver-a-dormir --on-active=15 \
+			--description="Volver a dormir si nadie usa el móvil tras despertar" /usr/local/sbin/volver-a-dormir.sh \
+			>/dev/null 2>&1
+		# PANTALLA APAGADA tras un despertar automático (2026-09-15): phosh/gsd-power la encendían en cada uno (el usuario
+		# lo veía de noche). Si no lo despertó el botón de encendido (IRQ 116) ni el volumen (117, 165), a los 3 s
+		# volver-a-dormir.sh --apagar-pantalla la pone en ahorro, salvo llamada o si ya lo han tocado.
+		case "${irq:-}" in
+			116|117|165) ;;
+			*)
+				systemctl stop pantalla-apagada.timer pantalla-apagada.service 2>/dev/null
+				systemctl reset-failed pantalla-apagada.timer pantalla-apagada.service 2>/dev/null
+				systemd-run --no-block --unit=pantalla-apagada --on-active=3 \
+					--description="Apagar la pantalla tras un despertar automático" /usr/local/sbin/volver-a-dormir.sh --apagar-pantalla \
+					>/dev/null 2>&1
+				;;
+		esac
+	fi
+	;;
+esac
+exit 0

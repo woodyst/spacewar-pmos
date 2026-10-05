@@ -1,0 +1,193 @@
+# Co-Maintainer: Aelin <aelin@postmarketos.org>
+# Co-Maintainer: Federico Amedeo Izzo <federico@izzo.pro>
+maintainer="Luca Weiss <luca@lucaweiss.eu>"
+_flavor="postmarketos-qcom-sc7280"
+pkgname=linux-$_flavor
+pkgver=7.2.2
+# spacewar (2026-09-12): el kernel de pmaports con parches propios (kernel/*.patch; la lista
+# source= la rehace scripts/40-compilar-kernel.sh). pkgrel alto para que una actualización del
+# mismo pkgver desde el repositorio oficial no lo sustituya.
+pkgrel=135
+pkgdesc="Mainline Kernel fork for SC7280/SM7325/QCM6490 devices"
+arch="aarch64"
+_carch="arm64"
+url="https://github.com/sc7280-mainline/linux"
+license="GPL-2.0-only"
+options="!strip !check !tracedeps
+	pmb:cross-native
+	pmb:kconfigcheck-community
+	pmb:kconfigcheck-uefi
+	pmb:kconfigcheck-virt
+	"
+makedepends="
+	bison
+	clang
+	elfutils-dev
+	findutils
+	flex
+	installkernel
+	linux-headers
+	lld
+	llvm
+	openssl-dev
+	pahole
+	perl
+	python3
+	zstd
+"
+
+_repo="linux"
+_config="config-$_flavor.$arch"
+_tag="v$pkgver-sc7280"
+
+# Source
+source="
+	https://github.com/sc7280-mainline/$_repo/archive/refs/tags/$_tag/$_repo-$_tag.tar.gz
+	$_config
+	0001-arm64-dts-qcom-sm7325-nothing-spacewar-enable-WCD9385-audio.patch
+	0002-FROMLIST-arm64-dts-qcom-sm7325-nothing-spacewar-Add-.patch
+	0003-FROMLIST-drivers-media-i2c-s5kjn1-Add-support-for-19.patch
+	0004-FROMLIST-RFT-dt-bindings-media-i2c-dw9719-Document-D.patch
+	0005-FROMLIST-RFT-media-i2c-dw9719-Add-DW9800W-support.patch
+	0006-FROMLIST-RFT-arm64-dts-qcom-sm7325-nothing-spacewar-.patch
+	0007-arm64-dts-qcom-sm7325-nothing-spacewar-tfa9873-stereo.patch
+	0008-ASoC-qdsp6-q6voice-import-the-CS-voice-call-stack-fr.patch
+	0009-ASoC-qdsp6-AFE-SLIMBUS_7-port-voice-routing-custom-t.patch
+	0010-ASoC-qcom-sm8250-Bluetooth-SCO-over-SLIMbus-links-an.patch
+	0011-Bluetooth-hci_qca-SCO-offload-changes-from-surya-r93.patch
+	0012-slimbus-qcom-ngd-ctrl-stream-channel-removal-and-rob.patch
+	0013-arm64-dts-qcom-sm7325-nothing-spacewar-wire-up-q6voi.patch
+	0014-ASoC-codecs-tfa9872-add-an-output-switch-to-power-do.patch
+	0015-slimbus-no-aplazar-el-sondeo-si-el-dispositivo-aun-n.patch
+	0016-ASoC-codecs-add-the-WCN399x-Bluetooth-SLIMBus-audio-.patch
+	0017-ASoC-wcn-bt-slim-stop-pinning-the-SLIMBus-controller.patch
+	0018-ASoC-codecs-wcn-bt-slim-add-the-WCN6750-product-0x22.patch
+	0019-arm64-dts-qcom-sm7325-nothing-spacewar-Bluetooth-SCO.patch
+	0020-Bluetooth-hci_qca-allow-the-SLIMbus-HFP-offload-on-W.patch
+	0021-ASoC-codecs-tfa9872-expose-the-amplifier-gain-as-a-v.patch
+	0022-arm64-dts-qcom-sm7325-nothing-spacewar-in-call-recor.patch
+	0023-arm64-dts-qcom-sm7325-nothing-spacewar-map-the-WCD93.patch
+	0024-ASoC-codecs-wcn-bt-slim-fix-the-module-device-table-.patch
+	0025-ASoC-codecs-tfa9872-expose-the-total-TDM-speaker-gai.patch
+	0026-ASoC-qdsp6-q6voice-take-the-voice-calibration-direct.patch
+	0027-misc-fastrpc-give-remote-heap-memory-back-to-HLOS-be.patch
+	0028-ASoC-qdsp6-q6voice-expose-the-call-downlink-volume-a.patch
+	0029-ASoC-qdsp6-q6voice-size-the-call-volume-to-the-vendo.patch
+	0030-ASoC-qdsp6-q6voice-send-the-Rx-volume-gain-of-the-st.patch
+	0031-arm64-dts-qcom-sm7325-nothing-spacewar-the-WCN6750-e.patch
+	0032-firmware-qcom-scm-register-the-Gunyah-watchdog-on-th.patch
+	0033-ASoC-qdsp6-q6afe-SLIMBus-AFE-ports-use-hardware-bloc.patch
+	0034-ASoC-qdsp6-q6voice-do-not-rebuild-the-whole-session-.patch
+	0035-slimbus-qcom-ngd-ctrl-remove-a-stream-s-channels-by-.patch
+	0036-ASoC-codecs-wcn-bt-slim-select-channel-bit-0-for-the.patch
+	0037-ASoC-codecs-wcn-bt-slim-hold-the-SLIMBus-controller-.patch
+	0038-ASoC-codecs-wcn-bt-slim-do-not-hold-the-bus-while-Bl.patch
+	0039-ASoC-codecs-wcn-bt-slim-look-for-the-chip-when-a-str.patch
+	0040-ASoC-codecs-wcn-bt-slim-keep-the-stream-startup-look.patch
+	0041-input-misc-add-the-Qualcomm-SPMI-PMIC-haptics-driver.patch
+	0042-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-.patch
+	0043-input-qcom-spmi-haptics-play-FF_RUMBLE-at-full-scale.patch
+	0044-arm64-dts-qcom-sm7325-nothing-spacewar-S5KJN1-link-f.patch
+	0045-WIP-media-i2c-add-a-Sony-IMX766-sensor-driver.patch
+	0046-WIP-arm64-dts-qcom-sm7325-nothing-spacewar-describe-.patch
+	0047-media-i2c-imx471-the-sensor-reads-out-RGGB.patch
+	0048-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-.patch
+	0049-power-supply-qcom_battmgr-expose-the-notification-re.patch
+	0050-crypto-qce-Add-runtime-PM-and-interconnect-bandwidth.patch
+	0051-leds-add-the-Awinic-AW21018-glyph-LED-driver.patch
+	0052-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-glyph-LEDs.patch
+"
+builddir="$srcdir/$_repo-$pkgver-sc7280"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/config-$_flavor.$arch" .config
+}
+
+build() {
+	unset LDFLAGS
+	# LOCALVERSION -r$pkgrel (spacewar, 2026-09-13): cada kernel con su /lib/modules/7.2.2-rN, para poder
+	# tener dos kernels en las ranuras A/B sin que uno pise los módulos del otro (como surya).
+	make ARCH="$_carch" LLVM=1 LOCALVERSION="-r$pkgrel" \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-$_flavor"
+}
+
+package() {
+	# ZBOOT EFI decompressor for EFI booting
+	install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz.efi" \
+		"$pkgdir/boot/linux.efi"
+
+	# Old GZIP'd kernel image for boot.img compatibility
+	install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz" \
+		"$pkgdir/boot/vmlinuz"
+
+	make modules_install dtbs_install \
+		ARCH="$_carch" \
+		LLVM=1 \
+		LOCALVERSION="-r$pkgrel" \
+		INSTALL_PATH="$pkgdir"/boot/ \
+		INSTALL_MOD_PATH="$pkgdir"/usr \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs
+	rm -f "$pkgdir"/lib/modules/*/build "$pkgdir"/lib/modules/*/source
+
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
+}
+
+sha512sums="
+17fde188f587e72feda664da72046458bb38f892785c9fe0b9ffd410d161b6620d28da0afbf38705078539c2d34fbd9aa3556d8de61aafdbe30ccd62bd80769b  linux-v7.2.2-sc7280.tar.gz
+f4a5a5ce8474cf6425197304e56dd1b565164b7d0fb0a1e47def3d0f7c95749b1e2c30ac8412f27930a6acdafb491518a0a471ffb4f0bac3de99e78e9e99abab  config-postmarketos-qcom-sc7280.aarch64
+3a578039e0cbaf3a6bf3fd01661f1951c290442530b5f8607991178367117eb2942e95b00d115251271a8e612a442734d5065339305742b7037a47bf2d840a9c  0001-arm64-dts-qcom-sm7325-nothing-spacewar-enable-WCD9385-audio.patch
+c4c0c7d2b17c38018bead2d00746ddba365a8f996709a137801646f0a20b1dd94d463148f3078da33c34bc0bcd8dec6e44772a535adc44f2e95d104eaeaf534c  0002-FROMLIST-arm64-dts-qcom-sm7325-nothing-spacewar-Add-.patch
+e4453169109254b028f6e8109140e1ea6cc953216c8f824280f4fa34e9fe7ac34a5be01f6551ad18fcd2ae87c59a4565bd5fd124b2b8c3f227d23a56baf9661f  0003-FROMLIST-drivers-media-i2c-s5kjn1-Add-support-for-19.patch
+46be79aca83d36a9b4b6dd4bd24c70379da252b8db6d1bb0c37590d205a198aee1bd07dfb3134bae00edd8009f60b211f6923389e0abe400ee052c25d60ef524  0004-FROMLIST-RFT-dt-bindings-media-i2c-dw9719-Document-D.patch
+0eb572f90f97ac3e4e4d2141fa1741facdef9d0cb01fd9f8b82763752b5e833a0d5df9c48bdc3510cfd605c881cb80760cb1ef30573cd21dd0fe9273e7a7e005  0005-FROMLIST-RFT-media-i2c-dw9719-Add-DW9800W-support.patch
+73ede1f780a529afff135715295982de4d9ed5b348fce21b045d27917c06007098972089f7c1acb04e30bf4f5fa9ecdec1f229a2eb2da81bb1a2c145fc75fca2  0006-FROMLIST-RFT-arm64-dts-qcom-sm7325-nothing-spacewar-.patch
+6d8798d671983504bf8ebffb99ca1c5d6149a87f0c5e8204d36b024426977a692a23361a33b997fe2b65ccdca71225dff2b8fccb5c44370c8a81b28928c1b4b6  0007-arm64-dts-qcom-sm7325-nothing-spacewar-tfa9873-stereo.patch
+485b6d563509c2b8581a5578854fcd49d603234d506718507918adad51fa37247eaacb0665acb10c11c445005f04888c814b331065d198992ff703b9626a541c  0008-ASoC-qdsp6-q6voice-import-the-CS-voice-call-stack-fr.patch
+5a1f7c9402b61287c3b17f22d0a74de2e17520cfb39d55cadbea7c22faa5ac963ce892f474cb1e852effc50a75dbdb3106559982fea53cc1808dcdbe7a2f73a7  0009-ASoC-qdsp6-AFE-SLIMBUS_7-port-voice-routing-custom-t.patch
+6975ad09496ba6d7c7aeebf4010d56c9e20db4f6ce0ad419c1a980ac7e582d8d8e22a5312344585ed9841aa02e1f66fc9dc4419082c9053d54a711a97b19a240  0010-ASoC-qcom-sm8250-Bluetooth-SCO-over-SLIMbus-links-an.patch
+341986656dc624961bfd4f2b3ee1df7ddadf9bf85ce544e554af041e28459682a196b235fb301b942b52b3e1e17b3d9fc34d79efd335030059f540e1681172be  0011-Bluetooth-hci_qca-SCO-offload-changes-from-surya-r93.patch
+093aae86453e3f80b0ea84824c29c8ef70c757388a1e764b4c96072aa7f329c4cd69f85dee8684c04aa83db0ba5a2fda2ec22a6201177eae62b0d08433881d10  0012-slimbus-qcom-ngd-ctrl-stream-channel-removal-and-rob.patch
+2bc47b05cdf305609bca909fffeca281a58b8ed538b0920284a8bf8c7cffbae85921bce21ecab79320f8c6e04d5817584e16287e397083a889c3502ce9b95aea  0013-arm64-dts-qcom-sm7325-nothing-spacewar-wire-up-q6voi.patch
+fb43e3ea3ee96ae950900a6f58f3f3648e2f4daa3ad35910b69ad3c87252ef82f71b80a52a2bfe9c78a574adb6d8a914594c87d4741476ca5a3b2e46f094ff2b  0014-ASoC-codecs-tfa9872-add-an-output-switch-to-power-do.patch
+22c3b34f0c895e8d63de88e9d0c58b626bdfe3032bc7600e7dab8c9c845f4953386251fb2efeb61e8890c47c4f6968bd23c829a177261080f372eb1aaba64a9c  0015-slimbus-no-aplazar-el-sondeo-si-el-dispositivo-aun-n.patch
+73adcfd3c410b1d95df347e83a79dfe5974486b4e4984f933040c4e26dafdfb528229e896bcfe7905a9f96eafb8b8ea962e7473a67ab4d8ca7f636e47dab97bb  0016-ASoC-codecs-add-the-WCN399x-Bluetooth-SLIMBus-audio-.patch
+667ec856e1b87a93bdf8824ea63d71e34274a94a2bdfe6d96f1afd7f9957abe9acefed83695b2312279c1a660ae9c8cb47a0e121242a455290a03f1984c2a5f3  0017-ASoC-wcn-bt-slim-stop-pinning-the-SLIMBus-controller.patch
+66f0828c310bf2769d64866c93e25edc1a8c3c7796fe412e013cfdc4f7583d7e9545b8898e4a5bcb56a0581c5f2bf59f1f823d6cf89f4d2babc309016d9f9502  0018-ASoC-codecs-wcn-bt-slim-add-the-WCN6750-product-0x22.patch
+512e9d5443e819b3c928ddd053cd8a62b3ef472ccde8088cd350c326097825304d0196ca7dc54ddeba5e0e4886bdad0b2729553d06e4a855f768e66eb55b5845  0019-arm64-dts-qcom-sm7325-nothing-spacewar-Bluetooth-SCO.patch
+75686beeadfa0753940a6b04d219bfac96f673582b2f8f1084333d4b3e2fbf3724feddc80a9319d130a840d16531f1d6d1b7f3d103f0bff43b26b9d721e54abd  0020-Bluetooth-hci_qca-allow-the-SLIMbus-HFP-offload-on-W.patch
+2fb8a0a564599b513f37d0c633ae84107e7f9d9390aa1a5a97362ae342b35c5c74a012a08ced81aa9b165d09b8af9a3ede1368b5af5804393f5995d7d631c81e  0021-ASoC-codecs-tfa9872-expose-the-amplifier-gain-as-a-v.patch
+bcf8be5418e57a65cd97a19834cd5abc8703b15f13af63d2430931b0a6d14c45a364e690311ea7534739389a10304c86e050ca8f6cb676602fcd4343c7ac704a  0022-arm64-dts-qcom-sm7325-nothing-spacewar-in-call-recor.patch
+d8abd6f300987bbb0edc61a33a24cb2a8ea03d79b8055c4657295031ea3b57982684ea5ac6fe3ec6cf1abed8cbfac3d3dd9c8ba27ce4a85ed69e42742413888b  0023-arm64-dts-qcom-sm7325-nothing-spacewar-map-the-WCD93.patch
+748872f203d20f691b82cf7d8a0da352af394f9a048b3ee759a7ea9f62eb85dd3f6d0d023f3326f89229edfa4c659d3b3dd32b3860da2cce0586e5ae9fb24358  0024-ASoC-codecs-wcn-bt-slim-fix-the-module-device-table-.patch
+a1c7eb87123f248bc49b7cffea7ecdd877bd078a08abaf523ba5c39c64a086b360a94e63bf3ec974694d882198c5d0beddc4fa4d94eddf2b2db8cda4a67f8d31  0025-ASoC-codecs-tfa9872-expose-the-total-TDM-speaker-gai.patch
+c6a31bedef185825298e591d51ff76176bbc4a5e93d24dfa1bfbdc53f1bb4543709f360527fca306a46ad5dcb07d9f57d828ce7830561b934a6deebc4b5f58c6  0026-ASoC-qdsp6-q6voice-take-the-voice-calibration-direct.patch
+da1ee18a7a6c40199945c0204ee9074c4ab2f8362428e55e194b3bafc7a9e994683d1c90e83bfd5400247160b9c738946b50ff11f695bf30f91c22bb322d398b  0027-misc-fastrpc-give-remote-heap-memory-back-to-HLOS-be.patch
+adf92f0f4561fe983f21fbd7024612c1eb9313aac6aef49f7e5c94902c33dc3057b75067b197e69ac1ad9df33bef53f61ed667e2fe77b408042da2a83fd37317  0028-ASoC-qdsp6-q6voice-expose-the-call-downlink-volume-a.patch
+60f0306e67e655c593c8549f2d7282ed237ea79a073f6895c7814d7a2542d375faacce52c802957b83d7fa59a16805a1019556f24b0b4bb9ea0bc1a9f5e95f6e  0029-ASoC-qdsp6-q6voice-size-the-call-volume-to-the-vendo.patch
+03f7e19632b446472c6dcf8077166fb0b9f3647f8bad44fb40e7c7c85211fb868452cac197fd7ac32a0307805666b5b0f5f2d65e11c860cff3278c771865213c  0030-ASoC-qdsp6-q6voice-send-the-Rx-volume-gain-of-the-st.patch
+9f8fabf7d83b1ee784faa59cbbb49d01b9e634e5b1712c115079413be4d5d84ad192be08c5b2214de3c02bfae5e46d78b7265426c84ad1fc3b93cbb8f678111c  0031-arm64-dts-qcom-sm7325-nothing-spacewar-the-WCN6750-e.patch
+1189e06ec4998ac118a4a8ffcfb33f4fe606fe20f3b55dd2cc9acf1646e9cdd56c20440bf0bfb8901ecfccd777296f45f68fe0cfe077da61bdd9c80225482a71  0032-firmware-qcom-scm-register-the-Gunyah-watchdog-on-th.patch
+fa2dcfb2fc36393f930f392b4697a40498bbcdb30e3272d0fd07a18e41a80d0ad2e854a2322e586bc2eb502c1af80c119837b9325c699fe5d46aee370b63e17a  0033-ASoC-qdsp6-q6afe-SLIMBus-AFE-ports-use-hardware-bloc.patch
+df6c8e05a30923a0d8dcca7a5fa4b5fa5a80a4e372091d559726abd33ba93b88274ded3d61858bfdb21fbe37515e601bc244129c9f9c09023a67847b06cff65a  0034-ASoC-qdsp6-q6voice-do-not-rebuild-the-whole-session-.patch
+47c1d9ea1d831411a1227e8ba8c50f8d3c694a5ad58284883386eb2eca11a7fec44b1804a413caf12a75a9abed635f4f20fd053fd7042a2a2ded72bf4ff34079  0035-slimbus-qcom-ngd-ctrl-remove-a-stream-s-channels-by-.patch
+eae3e3eb0e6e8e6779b55da6c5cf9119030cd8405507f52d19ec1f213cc5cc1c80f664979d0b4e660a3803435483ff227eb4c2a965b2639242b39f9af20a46cf  0036-ASoC-codecs-wcn-bt-slim-select-channel-bit-0-for-the.patch
+e4887f5fc0b56382ad856f38bf4039d9756de52776a43e88a9b0cd3c7f778ae9aab0e2e146aae72dc534c6e36d0d23e7eb1394a61b8960c922b2af1028ecedb8  0037-ASoC-codecs-wcn-bt-slim-hold-the-SLIMBus-controller-.patch
+9873ff3dd872a4a022bdbc9a9940a5e20782a8b301739fe3b316268b533e62dff6e086a4e2ae71bc28b2d8cd0160a75e41cb9ca76b78d7ac22048fd61f125937  0038-ASoC-codecs-wcn-bt-slim-do-not-hold-the-bus-while-Bl.patch
+67fd0b60f76ff49649fbc971217179d53e03d01ebd366c51b18adf6e54189a70b258448e021ead542c89a6591aef6ed355527fbf47d3df79a024efad83a1347d  0039-ASoC-codecs-wcn-bt-slim-look-for-the-chip-when-a-str.patch
+3b4511b5f3c06b3960d1c8a54e1c8ff480e9c3268f29c9d4fa40891e7c01a9f1f94486b5eeca2d5afcb84a32eec9984e9fa3e9db83fe904be8d709ef9263010e  0040-ASoC-codecs-wcn-bt-slim-keep-the-stream-startup-look.patch
+0d5c033316bc15892c2a5b067cca790eb0df65cedd748ea26381dbb8738d76f7d0b214e1548beef2a3f02915b21cca19d8bc4a861fbe1285781a33f2a6d0deb2  0041-input-misc-add-the-Qualcomm-SPMI-PMIC-haptics-driver.patch
+ecc4153f0a61f488aaf09b182d34eb4415e03305376c13b957d16b23259d645af2d9930197821358b9b4d431a93c20de236ee1f97a0c88f8d1090b6d582f5f0e  0042-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-.patch
+14f6af30bb44404c2af2f71fe6cf392084f7a44788fddf0e21600e9700bac4aa774359d001da99b14ccd570b8a8a5341d3c587877cbc7258a814a09274b26278  0043-input-qcom-spmi-haptics-play-FF_RUMBLE-at-full-scale.patch
+d3727a0a7d487277a3cdd48164389c6173fa5aea30f81e0300ab7255b044d8359931e20359214ed9b007fb47a688477c03056d38e78e420ae91c4382a02e67ce  0044-arm64-dts-qcom-sm7325-nothing-spacewar-S5KJN1-link-f.patch
+448fe5b5167525c7e8bcdbdc36a7eaf1743d4bcc14f20a1791be6c3ae691e1ed04aef1366ade64b909a324382932c4bd0de2e58f984363a7db14c5a2d138f297  0045-WIP-media-i2c-add-a-Sony-IMX766-sensor-driver.patch
+e7da1ff1cc0130d573598ae9bfc56ee25a289366a143e08e54046a604799bd9f5f92d2cad6c8a2d8d459799eb006d1440d82cb2057cc30fb13645ac608c2914d  0046-WIP-arm64-dts-qcom-sm7325-nothing-spacewar-describe-.patch
+75ca55f31866e8f368406a780b0f28a5cdc182a3cd1653ebf243a019b2475d9f104d260e2b7fba7fbfc1e27debec4fbe32c08b84226d0ba172ea96e41dfabce0  0047-media-i2c-imx471-the-sensor-reads-out-RGGB.patch
+8eb993b9bece8d433e1bd1f3ddea189031827e81bff3e726af1785056cf03832f739060d7720a7d1dc2a2f060388cd37299912838d6a7c00d795d891d725c964  0048-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-.patch
+1fb44ccceb9189cea4ff837a490a9e223c125b5b5078f8df45b5d70f20b2961635831c6cc2d620ec9d2172b84318876a8e52f9c3cd276228c8364bc35db4d15f  0049-power-supply-qcom_battmgr-expose-the-notification-re.patch
+1fb2cf5920ac415d7384d0808056b58680dad7d7e18a763ec3c44b3aec6c6f33a7b0bb9f387287763be3bf70a076e72eec62a9e2c8276e1c1b536b87ceeff535  0050-crypto-qce-Add-runtime-PM-and-interconnect-bandwidth.patch
+10bf13ab4c61c5c49c1e480adcc1fa43000756271ea1f7f6f82c44942478ed4200159fc5933f30632f0e388538ab4c08086218f0cbc5ac7d31036879626ff3b5  0051-leds-add-the-Awinic-AW21018-glyph-LED-driver.patch
+c5f9540d2c9ca08186283292880cf60ca39415f3c1e34ac8c99075f6c980d52825ac1be45c2d1a4cab0ecc23b2a09a6966b721006e50dc462a16af4e7b7cc73b  0052-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-glyph-LEDs.patch
+"

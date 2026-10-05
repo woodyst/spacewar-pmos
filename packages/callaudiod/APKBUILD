@@ -1,0 +1,51 @@
+# Forked from Alpine: el botón de manos libres de las llamadas (spacewar, 2026-09-12)
+#
+# En spacewar cada salida de llamada es un PERFIL de la tarjeta («Voice Call (Earpiece)»,
+# «Voice Call (Speaker)», «Voice Call (Bluetooth)»), no un puerto de un único sink: callaudiod de serie
+# solo sabe cambiar puertos y el botón no hace nada. El parche (el de surya, igual en 0.1.99 y en HEAD)
+# cambia de perfil dentro del verbo Voice Call y solo elige Bluetooth si hay un auricular conectado.
+# pkgrel alto para que no lo pise el callaudiod de Alpine.
+maintainer="Spacewar Local <spacewar@example.org>"
+pkgname=callaudiod
+pkgver=0.1.99
+pkgrel=100
+pkgdesc="Call audio routing daemon"
+url="https://gitlab.com/mobian1/callaudiod"
+arch="all"
+license="GPL-3.0-or-later"
+makedepends="meson alsa-lib-dev appstream-dev glib-dev pulseaudio-dev"
+subpackages="
+	$pkgname-dev
+	$pkgname-libs
+	callaudiocli
+	"
+source="https://gitlab.com/mobian1/callaudiod/-/archive/$pkgver/callaudiod-$pkgver.tar.gz
+	0001-boton-de-salida-con-auricular-bluetooth.patch
+	"
+
+build() {
+	abuild-meson -Db_lto=true . output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	depends="callaudiocli=$pkgver-r$pkgrel"
+	provider_priority=100
+
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
+}
+
+callaudiocli() {
+	pkgdesc="CLI for callaudiod"
+
+	amove usr/bin/callaudiocli
+}
+
+sha512sums="
+8243189cae4ea2d37f7773eaaf1f66b80357ca2803adcaed3eb57f57fce80c13e0667f1be7bac00256318f2cc2f790c388f1d56496d22f34377c4d6a0b43e5c0  callaudiod-0.1.99.tar.gz
+e822f05077e5460a18d8583f9d19ca80160bca79782b0d6f6284e371190009179c9afb5f34d758f849adf2ae7e308d6da00f365f731503d69b5a2a243b112296  0001-boton-de-salida-con-auricular-bluetooth.patch
+"

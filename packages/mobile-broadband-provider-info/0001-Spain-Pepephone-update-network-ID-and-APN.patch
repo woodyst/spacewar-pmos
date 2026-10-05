@@ -1,0 +1,43 @@
+From 58c3dc5105611617b686a27e2c790400623d9401 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Mon, 14 Sep 2026 18:48:11 +0200
+Subject: [PATCH] Spain (Pepephone): update network ID and APN
+
+Pepephone SIMs now use MCC 214 / MNC 04 (Yoigo) and roam nationally on
+Orange and Movistar. The obsolete MNC 06 entry with the
+gprs.pepephone.com and gprsmov.pepephone.com APNs no longer works.
+
+Official settings: https://www.pepephone.com/configura-tu-movil
+(Nombre: internet, APN: internet, MCC: 214, MNC: 04).
+---
+ serviceproviders.xml | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/serviceproviders.xml b/serviceproviders.xml
+index 8ba1e03..d9d4752 100644
+--- a/serviceproviders.xml
++++ b/serviceproviders.xml
+@@ -4445,17 +4445,12 @@ conceived.
+ 	<provider>
+ 		<name>Pepephone</name>
+ 		<gsm>
+-			<network-id mcc="214" mnc="06"/>
+-			<apn value="gprs.pepephone.com">
++			<network-id mcc="214" mnc="04"/>
++			<apn value="internet">
+ 				<plan type="postpaid"/>
+ 				<usage type="internet"/>
+ 				<name>Pepephone</name>
+ 			</apn>
+-			<apn value="gprsmov.pepephone.com">
+-				<plan type="postpaid"/>
+-				<usage type="internet"/>
+-				<name>Pepephone (Mobile)</name>
+-			</apn>
+ 		</gsm>
+ 	</provider>
+ 	<provider>
+-- 
+2.43.0
+

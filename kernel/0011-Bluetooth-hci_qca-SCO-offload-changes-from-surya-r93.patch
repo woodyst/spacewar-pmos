@@ -1,0 +1,129 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 19:16:03 +0200
+Subject: [PATCH 11/13] Bluetooth: hci_qca: SCO offload changes from surya
+ (r93)
+
+Consolidated from the surya (sm7150) series v7.1_rc3..4c005af83 (patch -F3).
+---
+ drivers/bluetooth/hci_qca.c | 73 +++++++++++++++++++++++++++++++++++--
+ 1 file changed, 70 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/bluetooth/hci_qca.c b/drivers/bluetooth/hci_qca.c
+index 1222f9780..ce4e3c38c 100644
+--- a/drivers/bluetooth/hci_qca.c
++++ b/drivers/bluetooth/hci_qca.c
+@@ -232,6 +232,29 @@ struct qca_serdev {
+ 	const char *firmware_name[2];
+ };
+ 
++/*
++ * Whether the core may use SCO flow control on this controller.
++ *
++ * Off by default because a WCN3990 lies about it: it advertises Write
++ * Synchronous Flow Control Enable, accepts the command and then reports the
++ * feature as enabled, but never sends the completed-packet events that give
++ * the credits back. Measured: SCO transmission stops dead after exactly
++ * sco_pkts packets - four - while reception carries on at a hundred a second.
++ * Left as a parameter because the next controller may be honest.
++ */
++static bool sco_flowctl;
++
++/*
++ * Carry SCO audio over the chip's own audio bus instead of over HCI, the way
++ * the vendor stack does. Needs the SLIMBus side up first (slim_qcom_ngd_ctrl
++ * and the WCN3990 audio device), or the controller has no audio source.
++ */
++static bool hfp_offload;
++module_param(hfp_offload, bool, 0644);
++MODULE_PARM_DESC(hfp_offload, "carry SCO audio over SLIMBus instead of over HCI");
++module_param(sco_flowctl, bool, 0644);
++MODULE_PARM_DESC(sco_flowctl, "use SCO flow control when the controller offers it");
++
+ static int qca_regulator_enable(struct qca_serdev *qcadev);
+ static void qca_regulator_disable(struct qca_serdev *qcadev);
+ static void qca_power_off(struct hci_uart *hu);
+@@ -1890,10 +1913,20 @@ static void hci_coredump_qca(struct hci_dev *hdev)
+ 		bt_dev_err(hdev, "%s: trigger crash failed (%d)", __func__, err);
+ }
+ 
++/*
++ * Which transport the controller should use for SCO audio. 1 is what the
++ * newer QCA parts document, but the WCN3990 rejects the link outright with it
++ * (`Limited Resources`, then `Security Reasons` on the HV3 attempt), so leave
++ * it writable while the right value for this part is being found. 0 is plain
++ * HCI, i.e. no offload at all.
++ */
++static int hfp_datapath = 1;
++module_param(hfp_datapath, int, 0644);
++MODULE_PARM_DESC(hfp_datapath, "data path id for offloaded SCO audio");
++
+ static int qca_get_data_path_id(struct hci_dev *hdev, __u8 *data_path_id)
+ {
+-	/* QCA uses 1 as non-HCI data path id for HFP */
+-	*data_path_id = 1;
++	*data_path_id = hfp_datapath;
+ 	return 0;
+ }
+ 
+@@ -1938,6 +1971,25 @@ static int qca_setup(struct hci_uart *hu)
+ 	 */
+ 	hci_set_quirk(hdev, HCI_QUIRK_SIMULTANEOUS_DISCOVERY);
+ 
++	/*
++	 * Let the core use SCO flow control if the controller offers it.
++	 *
++	 * Without it hci_sched_sco() has no idea when the controller has room:
++	 * it just sends sco_pkts packets in a row and requeues its work, so the
++	 * pacing comes from the workqueue and not from the link. This one
++	 * reports only four SCO buffers, so a burst is 30 ms of audio - a call
++	 * to a headset arrives chopped into fast pulses, and overrunning those
++	 * four buffers is easy enough to take the firmware down with it.
++	 *
++	 * The core still checks that the controller advertises Write Sync Flow
++	 * Control before using it, so this is a no-op where it is unsupported.
++	 *
++	 * ⚠ Off by default: this controller advertises the feature and then
++	 * never returns the credits. See the comment on sco_flowctl.
++	 */
++	if (sco_flowctl)
++		hci_set_quirk(hdev, HCI_QUIRK_SYNC_FLOWCTL_SUPPORTED);
++
+ 	switch (soc_type) {
+ 	case QCA_QCA2066:
+ 		soc_name = "qca2066";
+@@ -2147,6 +2199,20 @@ static const struct qca_device_data qca_soc_data_wcn3990 __maybe_unused = {
+ 		{ "vddch0", 450000 },
+ 	},
+ 	.num_vregs = 4,
++	/*
++	 * QCA_CAP_HFP_HW_OFFLOAD is not set here but through the hfp_offload
++	 * parameter, because it only works with the chip's SLIMBus audio ports
++	 * up. Advertising it hands data path id 1 to the controller - "the SCO
++	 * audio comes over SLIMBus, not over HCI" - and with the ports asleep
++	 * the controller has no audio source, transmits nothing and dies
++	 * outright once both directions are open.
++	 *
++	 * The vendor stack does exactly this: captured with the same headset on
++	 * a call, it negotiates the same eSCO link and then sends not one SCO
++	 * packet over HCI. Carrying the audio over HCI instead works on paper -
++	 * right size, rate and format, all measured - and still arrives chopped
++	 * and takes the firmware down with it.
++	 */
+ };
+ 
+ static const struct qca_device_data qca_soc_data_wcn3991 __maybe_unused = {
+@@ -2563,7 +2629,8 @@ static int qca_serdev_probe(struct serdev_device *serdev)
+ 		if (!(data->capabilities & QCA_CAP_VALID_LE_STATES))
+ 			hci_set_quirk(hdev, HCI_QUIRK_BROKEN_LE_STATES);
+ 
+-		if (data->capabilities & QCA_CAP_HFP_HW_OFFLOAD)
++		if ((data->capabilities & QCA_CAP_HFP_HW_OFFLOAD) ||
++		    (hfp_offload && data->soc_type == QCA_WCN3990))
+ 			qcadev->support_hfp_hw_offload = true;
+ 	}
+ 
+-- 
+2.47.3
+

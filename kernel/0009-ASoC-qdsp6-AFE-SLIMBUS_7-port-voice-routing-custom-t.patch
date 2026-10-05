@@ -1,0 +1,1987 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sat, 12 Sep 2026 19:16:03 +0200
+Subject: [PATCH 09/13] ASoC: qdsp6: AFE SLIMBUS_7 port, voice routing, custom
+ topologies and ADM/ASM changes from surya (r93)
+
+Consolidated from the surya (sm7150) series v7.1_rc3..4c005af83 (patch -F3).
+---
+ .../sound/qcom,q6dsp-lpass-ports.h            |  23 ++
+ sound/soc/qcom/qdsp6/q6adm.c                  |  98 ++++-
+ sound/soc/qcom/qdsp6/q6afe-dai.c              |  59 +++
+ sound/soc/qcom/qdsp6/q6afe.c                  | 355 ++++++++++++++++-
+ sound/soc/qcom/qdsp6/q6afe.h                  |  11 +
+ sound/soc/qcom/qdsp6/q6asm-dai.c              |  62 ++-
+ sound/soc/qcom/qdsp6/q6asm.c                  |  85 +++-
+ sound/soc/qcom/qdsp6/q6core.c                 | 373 ++++++++++++++++++
+ sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c      |  78 ++++
+ sound/soc/qcom/qdsp6/q6dsp-lpass-ports.h      |   1 +
+ sound/soc/qcom/qdsp6/q6routing.c              | 172 +++++++-
+ 11 files changed, 1269 insertions(+), 48 deletions(-)
+
+diff --git a/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h b/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+index 45850f2d4..62490463e 100644
+--- a/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
++++ b/include/dt-bindings/sound/qcom,q6dsp-lpass-ports.h
+@@ -153,6 +153,29 @@
+ #define SENARY_MI2S_RX		147
+ #define SENARY_MI2S_TX		148
+ 
++/*
++ * SLIMBUS_7 is where the WCN399x Bluetooth chip's SCO ports live. It gets
++ * appended here rather than slotted in after SLIMBUS_6, because these numbers
++ * are device tree ABI and array indices: renumbering everything after it would
++ * silently repoint every existing board's ports.
++ *
++ * The values are not arbitrary. Code infers a port's direction from the parity
++ * of its id - q6slim_set_channel_map() reads a port as TX when (id & 1) - so
++ * RX has to stay even and TX odd. Numbering these 149/150 instead makes the
++ * DSP reject the channel map for the playback port with -EINVAL. 149 is left
++ * unused for that reason.
++ */
++#define SLIMBUS_7_RX		150
++#define SLIMBUS_7_TX		151
++/*
++ * Pseudo ports the DSP uses to make a phone call reachable from the CPU:
++ * the conversation is copied to VOICE_RECORD_{RX,TX}, and anything written to
++ * VOICE_PLAYBACK_TX is mixed into what the far end hears.
++ */
++#define VOICE_RECORD_RX		152
++#define VOICE_RECORD_TX		153
++#define VOICE_PLAYBACK_TX	154
++
+ #define LPASS_CLK_ID_PRI_MI2S_IBIT	1
+ #define LPASS_CLK_ID_PRI_MI2S_EBIT	2
+ #define LPASS_CLK_ID_SEC_MI2S_IBIT	3
+diff --git a/sound/soc/qcom/qdsp6/q6adm.c b/sound/soc/qcom/qdsp6/q6adm.c
+index db0ae71f2..6eddc2fb3 100644
+--- a/sound/soc/qcom/qdsp6/q6adm.c
++++ b/sound/soc/qcom/qdsp6/q6adm.c
+@@ -25,6 +25,11 @@
+ #define ADM_CMDRSP_DEVICE_OPEN_V5	0x00010329
+ #define ADM_CMD_DEVICE_CLOSE_V5		0x00010327
+ #define ADM_CMD_MATRIX_MAP_ROUTINGS_V5	0x00010325
++/* The vendor stack opens every COPP with v8; v5 is what mainline has used. */
++#define ADM_CMD_DEVICE_OPEN_V8		0x0001036A
++#define ADM_CMDRSP_DEVICE_OPEN_V8	0x0001036B
++/* No second (or third) endpoint: zero is a valid port id, 0xffff is "none". */
++#define ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE	0xffff
+ 
+ #define TIMEOUT_MS 1000
+ #define RESET_COPP_ID 99
+@@ -77,6 +82,26 @@ struct q6adm_cmd_device_open_v5 {
+ 	u8 dev_channel_mapping[8];
+ } __packed;
+ 
++/*
++ * Same fields as v5 with the topology moved ahead of the endpoints and a third
++ * endpoint added. The factory stack opens every COPP with this one, including
++ * the in-call pseudo ports, and it is the last difference left between the two
++ * command streams once the payload fields are made to match.
++ */
++struct q6adm_cmd_device_open_v8 {
++	u16 flags;
++	u16 mode_of_operation;
++	u32 topology_id;
++	u16 endpoint_id_1;
++	u16 endpoint_id_2;
++	u16 endpoint_id_3;
++	u16 reserved;
++	u16 dev_num_channel;
++	u16 bit_width;
++	u32 sample_rate;
++	u8 dev_channel_mapping[8];
++} __packed;
++
+ struct q6adm_cmd_matrix_map_routings_v5 {
+ 	u32 matrix_id;
+ 	u32 num_sessions;
+@@ -218,6 +243,7 @@ static int q6adm_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 		}
+ 		switch (result->opcode) {
+ 		case ADM_CMD_DEVICE_OPEN_V5:
++		case ADM_CMD_DEVICE_OPEN_V8:
+ 		case ADM_CMD_DEVICE_CLOSE_V5:
+ 			list_for_each_entry(copp, &adm->copps_list, node) {
+ 				if ((port_idx == copp->afe_port) && (copp_idx == copp->copp_idx)) {
+@@ -239,6 +265,8 @@ static int q6adm_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 		}
+ 		return 0;
+ 	}
++	/* v8 answers with its own opcode and the very same payload. */
++	case ADM_CMDRSP_DEVICE_OPEN_V8:
+ 	case ADM_CMDRSP_DEVICE_OPEN_V5: {
+ 		struct adm_cmd_rsp_device_open_v5 {
+ 			u32 status;
+@@ -323,21 +351,42 @@ static struct q6copp *q6adm_find_matching_copp(struct q6adm *adm,
+ 	return ret;
+ }
+ 
++/*
++ * There is no second endpoint on any of the paths we open, and the way to say
++ * so is 0xffff - zero is a perfectly valid port id. The vendor stack always
++ * sends the ignore value; mainline was leaving the field at zero. Under a
++ * parameter so the change can be taken back without a rebuild.
++ */
++
++static bool endpoint2_ignore = true;
++module_param(endpoint2_ignore, bool, 0644);
++MODULE_PARM_DESC(endpoint2_ignore,
++		 "send 0xffff as the ADM second endpoint instead of zero");
++
++static bool device_open_v8 = true;
++module_param(device_open_v8, bool, 0644);
++MODULE_PARM_DESC(device_open_v8,
++		 "open COPPs with ADM_CMD_DEVICE_OPEN_V8 like the vendor stack");
++
+ static int q6adm_device_open(struct q6adm *adm, struct q6copp *copp,
+ 			     int port_id, int path, int topology,
+ 			     int channel_mode, int bit_width, int rate)
+ {
++	struct q6adm_cmd_device_open_v8 *open8;
+ 	struct q6adm_cmd_device_open_v5 *open;
+ 	int afe_port = q6afe_get_port_id(port_id);
++	u8 *channel_mapping;
+ 	struct apr_pkt *pkt;
+-	int ret, pkt_size = APR_HDR_SIZE + sizeof(*open);
++	int ret, pkt_size;
++
++	pkt_size = APR_HDR_SIZE + (device_open_v8 ? sizeof(*open8)
++						  : sizeof(*open));
+ 
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+ 		return -ENOMEM;
+ 
+ 	pkt = p;
+-	open = p + APR_HDR_SIZE;
+ 	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+ 					   APR_HDR_LEN(APR_HDR_SIZE),
+ 					   APR_PKT_VER);
+@@ -345,21 +394,42 @@ static int q6adm_device_open(struct q6adm *adm, struct q6copp *copp,
+ 	pkt->hdr.src_port = afe_port;
+ 	pkt->hdr.dest_port = afe_port;
+ 	pkt->hdr.token = port_id << 16 | copp->copp_idx;
+-	pkt->hdr.opcode = ADM_CMD_DEVICE_OPEN_V5;
+-	open->flags = ADM_LEGACY_DEVICE_SESSION;
+-	open->mode_of_operation = path;
+-	open->endpoint_id_1 = afe_port;
+-	open->topology_id = topology;
+-	open->dev_num_channel = channel_mode & 0x00FF;
+-	open->bit_width = bit_width;
+-	open->sample_rate = rate;
+-
+-	ret = q6dsp_map_channels(&open->dev_channel_mapping[0],
+-				 channel_mode);
++
++	if (device_open_v8) {
++		open8 = p + APR_HDR_SIZE;
++		pkt->hdr.opcode = ADM_CMD_DEVICE_OPEN_V8;
++		open8->flags = ADM_LEGACY_DEVICE_SESSION;
++		open8->mode_of_operation = path;
++		open8->topology_id = topology;
++		open8->endpoint_id_1 = afe_port;
++		open8->endpoint_id_2 = ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE;
++		open8->endpoint_id_3 = ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE;
++		open8->dev_num_channel = channel_mode & 0x00FF;
++		open8->bit_width = bit_width;
++		open8->sample_rate = rate;
++		channel_mapping = &open8->dev_channel_mapping[0];
++	} else {
++		open = p + APR_HDR_SIZE;
++		pkt->hdr.opcode = ADM_CMD_DEVICE_OPEN_V5;
++		open->flags = ADM_LEGACY_DEVICE_SESSION;
++		open->mode_of_operation = path;
++		open->endpoint_id_1 = afe_port;
++		if (endpoint2_ignore)
++			open->endpoint_id_2 = ADM_CMD_COPP_OPEN_END_POINT_ID_IGNORE;
++		open->topology_id = topology;
++		open->dev_num_channel = channel_mode & 0x00FF;
++		open->bit_width = bit_width;
++		open->sample_rate = rate;
++		channel_mapping = &open->dev_channel_mapping[0];
++	}
++
++	ret = q6dsp_map_channels(channel_mapping, channel_mode);
+ 	if (ret)
+ 		return ret;
+ 
+-	return q6adm_apr_send_copp_pkt(adm, copp, pkt, ADM_CMDRSP_DEVICE_OPEN_V5);
++	return q6adm_apr_send_copp_pkt(adm, copp, pkt,
++				       device_open_v8 ? ADM_CMDRSP_DEVICE_OPEN_V8
++						      : ADM_CMDRSP_DEVICE_OPEN_V5);
+ }
+ 
+ /**
+diff --git a/sound/soc/qcom/qdsp6/q6afe-dai.c b/sound/soc/qcom/qdsp6/q6afe-dai.c
+index a0d21034a..cf0b5b2fa 100644
+--- a/sound/soc/qcom/qdsp6/q6afe-dai.c
++++ b/sound/soc/qcom/qdsp6/q6afe-dai.c
+@@ -367,6 +367,19 @@ static int q6dma_hw_params(struct snd_pcm_substream *substream,
+ 
+ 	return 0;
+ }
++static int q6pseudo_hw_params(struct snd_pcm_substream *substream,
++			      struct snd_pcm_hw_params *params,
++			      struct snd_soc_dai *dai)
++{
++	struct q6afe_dai_data *dai_data = dev_get_drvdata(dai->dev);
++	struct q6afe_pseudo_cfg *cfg = &dai_data->port_config[dai->id].pseudo;
++
++	cfg->sample_rate = params_rate(params);
++	cfg->num_channels = params_channels(params);
++
++	return 0;
++}
++
+ static void q6afe_dai_shutdown(struct snd_pcm_substream *substream,
+ 				struct snd_soc_dai *dai)
+ {
+@@ -406,6 +419,9 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
+ 					&dai_data->port_config[dai->id].hdmi);
+ 		break;
+ 	case SLIMBUS_0_RX ... SLIMBUS_6_TX:
++	/* Not part of the range above: these IDs are appended at the end. */
++	case SLIMBUS_7_RX:
++	case SLIMBUS_7_TX:
+ 		q6afe_slim_port_prepare(dai_data->port[dai->id],
+ 					&dai_data->port_config[dai->id].slim);
+ 		break;
+@@ -432,6 +448,11 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
+ 		q6afe_usb_port_prepare(dai_data->port[dai->id],
+ 				       &dai_data->port_config[dai->id].usb_audio);
+ 		break;
++	case VOICE_RECORD_RX ... VOICE_PLAYBACK_TX:
++		q6afe_pseudo_port_prepare(dai_data->port[dai->id],
++			dai_data->port_config[dai->id].pseudo.num_channels,
++			dai_data->port_config[dai->id].pseudo.sample_rate);
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -527,6 +548,7 @@ static const struct snd_soc_dapm_route q6afe_dapm_routes[] = {
+ 	{"Slimbus4 Playback", NULL, "SLIMBUS_4_RX"},
+ 	{"Slimbus5 Playback", NULL, "SLIMBUS_5_RX"},
+ 	{"Slimbus6 Playback", NULL, "SLIMBUS_6_RX"},
++	{"Slimbus7 Playback", NULL, "SLIMBUS_7_RX"},
+ 
+ 	{"SLIMBUS_0_TX", NULL, "Slimbus Capture"},
+ 	{"SLIMBUS_1_TX", NULL, "Slimbus1 Capture"},
+@@ -535,6 +557,10 @@ static const struct snd_soc_dapm_route q6afe_dapm_routes[] = {
+ 	{"SLIMBUS_4_TX", NULL, "Slimbus4 Capture"},
+ 	{"SLIMBUS_5_TX", NULL, "Slimbus5 Capture"},
+ 	{"SLIMBUS_6_TX", NULL, "Slimbus6 Capture"},
++	{"SLIMBUS_7_TX", NULL, "Slimbus7 Capture"},
++	{"VOICE_RECORD_RX", NULL, "Voice Downlink Capture"},
++	{"VOICE_RECORD_TX", NULL, "Voice Uplink Capture"},
++	{"Voice Farend Playback", NULL, "VOICE_PLAYBACK_TX"},
+ 
+ 	{"Primary MI2S Playback", NULL, "PRI_MI2S_RX"},
+ 	{"Secondary MI2S Playback", NULL, "SEC_MI2S_RX"},
+@@ -692,6 +718,24 @@ static int msm_dai_q6_dai_remove(struct snd_soc_dai *dai)
+ 	return 0;
+ }
+ 
++/**
++ * q6afe_dai_get_port() - borrow this DAI's already-owned AFE port
++ *
++ * @dai: DAI to fetch the port for
++ *
++ * Returns the same struct q6afe_port * that msm_dai_q6_dai_probe() opened
++ * and holds for this DAI's entire lifetime (freed only in .remove). Callers
++ * must NOT call q6afe_port_put() on the result - it isn't a new reference,
++ * just a loan of the one this file already owns.
++ */
++struct q6afe_port *q6afe_dai_get_port(struct snd_soc_dai *dai)
++{
++	struct q6afe_dai_data *dai_data = dev_get_drvdata(dai->dev);
++
++	return dai_data->port[dai->id];
++}
++EXPORT_SYMBOL_GPL(q6afe_dai_get_port);
++
+ static const struct snd_soc_dai_ops q6afe_usb_ops = {
+ 	.probe		= msm_dai_q6_dai_probe,
+ 	.prepare	= q6afe_dai_prepare,
+@@ -747,6 +791,14 @@ static const struct snd_soc_dai_ops q6tdm_ops = {
+ 	.hw_params		= q6tdm_hw_params,
+ };
+ 
++static const struct snd_soc_dai_ops q6pseudo_ops = {
++	.probe		= msm_dai_q6_dai_probe,
++	.remove		= msm_dai_q6_dai_remove,
++	.prepare	= q6afe_dai_prepare,
++	.hw_params	= q6pseudo_hw_params,
++	.shutdown	= q6afe_dai_shutdown,
++};
++
+ static const struct snd_soc_dai_ops q6dma_ops = {
+ 	.probe			= msm_dai_q6_dai_probe,
+ 	.remove			= msm_dai_q6_dai_remove,
+@@ -766,6 +818,7 @@ static const struct snd_soc_dapm_widget q6afe_dai_widgets[] = {
+ 	SND_SOC_DAPM_AIF_IN("SLIMBUS_4_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SLIMBUS_5_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SLIMBUS_6_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_IN("SLIMBUS_7_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_0_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_1_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_2_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+@@ -773,6 +826,11 @@ static const struct snd_soc_dapm_widget q6afe_dai_widgets[] = {
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_4_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_5_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SLIMBUS_6_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_OUT("SLIMBUS_7_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	/* The DSP's copy of a call: two taps out, one injection in. */
++	SND_SOC_DAPM_AIF_OUT("VOICE_RECORD_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_OUT("VOICE_RECORD_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
++	SND_SOC_DAPM_AIF_IN("VOICE_PLAYBACK_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("SEN_MI2S_RX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_OUT("SEN_MI2S_TX", NULL, 0, SND_SOC_NOPM, 0, 0),
+ 	SND_SOC_DAPM_AIF_IN("QUIN_MI2S_RX", NULL,
+@@ -1127,6 +1185,7 @@ static int q6afe_dai_dev_probe(struct platform_device *pdev)
+ 	cfg.q6tdm_ops = &q6tdm_ops;
+ 	cfg.q6dma_ops = &q6dma_ops;
+ 	cfg.q6usb_ops = &q6afe_usb_ops;
++	cfg.q6pseudo_ops = &q6pseudo_ops;
+ 	dais = q6dsp_audio_ports_set_config(dev, &cfg, &num_dais);
+ 
+ 	return devm_snd_soc_register_component(dev, &q6afe_dai_component, dais, num_dais);
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 28b5b6b91..bf3228e09 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -28,6 +28,33 @@
+ #define AFE_PORT_CMD_DEVICE_START	0x000100E5
+ #define AFE_PORT_CMD_DEVICE_STOP	0x000100E6
+ #define AFE_PORT_CMD_SET_PARAM_V2	0x000100EF
++#define AFE_PORT_CMD_SET_PARAM_V3	0x000100FA
++
++/*
++ * Which version of the port parameter command to use, and how much of the
++ * pseudo port configuration to send. The vendor uses v3 for everything and
++ * sends 204 bytes of configuration for the pseudo ports - the whole union -
++ * where we send only the 16 bytes the structure actually needs.
++ */
++static bool set_param_v3 = true;
++module_param(set_param_v3, bool, 0644);
++MODULE_PARM_DESC(set_param_v3, "send port parameters with command v3 (vendor) instead of v2");
++
++/*
++ * How much the vendor sends as the pseudo port configuration: its own port
++ * config union, 204 bytes, of which only the first 16 are the pseudo port
++ * structure and the rest is zeroes. Ours is smaller, so to send the same
++ * amount the payload has to be padded out to the vendor's size.
++ */
++#define AFE_VENDOR_PORT_CFG_SIZE	204
++
++static bool pseudo_cfg_full = true;
++module_param(pseudo_cfg_full, bool, 0644);
++MODULE_PARM_DESC(pseudo_cfg_full, "send the whole config union for pseudo ports, as the vendor does");
++
++static bool pseudo_cfg_last = true;
++module_param(pseudo_cfg_last, bool, 0644);
++MODULE_PARM_DESC(pseudo_cfg_last, "send the pseudo port config after topology and delay, as the vendor does");
+ #define AFE_SVC_CMD_SET_PARAM		0x000100f3
+ #define AFE_PORT_CMDRSP_GET_PARAM_V2	0x00010106
+ #define AFE_PARAM_ID_HDMI_CONFIG	0x00010210
+@@ -120,6 +147,19 @@
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_RX      0x400c
+ /* SLIMbus Tx port on channel 6. */
+ #define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX      0x400d
++#define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX      0x400e
++#define AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX      0x400f
++/*
++ * Pseudo ports. They have no hardware behind them: the DSP copies the voice
++ * stream into 0x8003/0x8004 so the CPU can read the call, and mixes whatever
++ * arrives on 0x8005 into the uplink. Despite that, they are configured and
++ * started like any other port (AFE_PARAM_ID_PSEUDO_PORT_CONFIG plus the usual
++ * device start); the dedicated AFE_PSEUDOPORT_CMD_START has no callers in the
++ * vendor stack.
++ */
++#define AFE_PORT_ID_VOICE_RECORD_RX              0x8003
++#define AFE_PORT_ID_VOICE_RECORD_TX              0x8004
++#define AFE_PORT_ID_VOICE_PLAYBACK_TX            0x8005
+ #define AFE_PORT_ID_PRIMARY_MI2S_RX         0x1000
+ #define AFE_PORT_ID_PRIMARY_MI2S_TX         0x1001
+ #define AFE_PORT_ID_SECONDARY_MI2S_RX       0x1002
+@@ -418,6 +458,28 @@ struct afe_port_cmd_set_param_v2 {
+ 	u32 mem_map_handle;
+ } __packed;
+ 
++/*
++ * The vendor sends its port parameters with v3 of the command: the port id and
++ * the memory header are laid out differently and each parameter carries an
++ * instance id. Its traces show v3 for every port, ours have always used v2.
++ */
++struct afe_port_cmd_set_param_v3 {
++	u16 port_id;
++	u16 reserved;
++	u32 payload_address_lsw;
++	u32 payload_address_msw;
++	u32 mem_map_handle;
++	u32 payload_size;
++} __packed;
++
++struct afe_port_param_data_v3 {
++	u32 module_id;
++	u16 instance_id;
++	u16 reserved;
++	u32 param_id;
++	u32 param_size;
++} __packed;
++
+ struct afe_param_id_hdmi_multi_chan_audio_cfg {
+ 	u32 hdmi_cfg_minor_version;
+ 	u16 datatype;
+@@ -606,6 +668,19 @@ struct afe_param_id_usb_audio_svc_interval {
+ 	u32	svc_interval;
+ } __packed;
+ 
++#define AFE_PARAM_ID_PSEUDO_PORT_CONFIG	0x00010219
++#define AFE_API_VERSION_PSEUDO_PORT_CONFIG	0x1
++#define AFE_PSEUDOPORT_TIMING_MODE_TIMER	0x1
++
++struct afe_param_id_pseudo_port_cfg {
++	u32	cfg_minor_version;
++	u16	bit_width;
++	u16	num_channels;
++	u16	data_format;	/* 0 = linear PCM */
++	u16	timing_mode;
++	u32	sample_rate;
++} __packed;
++
+ union afe_port_config {
+ 	struct afe_param_id_hdmi_multi_chan_audio_cfg hdmi_multi_ch;
+ 	struct afe_param_id_slimbus_cfg           slim_cfg;
+@@ -613,6 +688,7 @@ union afe_port_config {
+ 	struct afe_param_id_tdm_cfg	tdm_cfg;
+ 	struct afe_param_id_cdc_dma_cfg	dma_cfg;
+ 	struct afe_param_id_usb_cfg usb_cfg;
++	struct afe_param_id_pseudo_port_cfg pseudo_cfg;
+ } __packed;
+ 
+ 
+@@ -687,6 +763,8 @@ static struct afe_port_map port_maps[AFE_PORT_MAX] = {
+ 				SLIMBUS_5_RX, 1, 1},
+ 	[SLIMBUS_6_RX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_RX,
+ 				SLIMBUS_6_RX, 1, 1},
++	[SLIMBUS_7_RX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX,
++				SLIMBUS_7_RX, 1, 1},
+ 	[SLIMBUS_0_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_0_TX,
+ 				SLIMBUS_0_TX, 0, 1},
+ 	[SLIMBUS_1_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_1_TX,
+@@ -701,6 +779,14 @@ static struct afe_port_map port_maps[AFE_PORT_MAX] = {
+ 				SLIMBUS_5_TX, 0, 1},
+ 	[SLIMBUS_6_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX,
+ 				SLIMBUS_6_TX, 0, 1},
++	[SLIMBUS_7_TX] = { AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX,
++				SLIMBUS_7_TX, 0, 1},
++	[VOICE_RECORD_RX] = { AFE_PORT_ID_VOICE_RECORD_RX,
++				VOICE_RECORD_RX, 0, 1},
++	[VOICE_RECORD_TX] = { AFE_PORT_ID_VOICE_RECORD_TX,
++				VOICE_RECORD_TX, 0, 1},
++	[VOICE_PLAYBACK_TX] = { AFE_PORT_ID_VOICE_PLAYBACK_TX,
++				VOICE_PLAYBACK_TX, 1, 1},
+ 	[PRIMARY_MI2S_RX] = { AFE_PORT_ID_PRIMARY_MI2S_RX,
+ 				PRIMARY_MI2S_RX, 1, 1},
+ 	[PRIMARY_MI2S_TX] = { AFE_PORT_ID_PRIMARY_MI2S_TX,
+@@ -983,6 +1069,7 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 		}
+ 		switch (res->opcode) {
+ 		case AFE_PORT_CMD_SET_PARAM_V2:
++		case AFE_PORT_CMD_SET_PARAM_V3:
+ 		case AFE_PORT_CMD_DEVICE_STOP:
+ 		case AFE_PORT_CMD_DEVICE_START:
+ 		case AFE_SVC_CMD_SET_PARAM:
+@@ -1130,24 +1217,30 @@ static int q6afe_port_set_param(struct q6afe_port *port, void *data,
+ static int q6afe_port_set_param_v2(struct q6afe_port *port, void *data,
+ 				   int param_id, int module_id, int psize)
+ {
++	int copy_size = min_t(int, psize, (int)sizeof(union afe_port_config));
++	struct afe_port_cmd_set_param_v3 *param3;
++	struct afe_port_param_data_v3 *pdata3;
+ 	struct afe_port_cmd_set_param_v2 *param;
+ 	struct afe_port_param_data_v2 *pdata;
+ 	struct q6afe *afe = port->afe;
+ 	struct apr_pkt *pkt;
+ 	u16 port_id = port->id;
+-	int ret, pkt_size = APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata) + psize;
++	int ret, opcode, pkt_size;
+ 	void *pl;
+ 
++	if (set_param_v3) {
++		opcode = AFE_PORT_CMD_SET_PARAM_V3;
++		pkt_size = APR_HDR_SIZE + sizeof(*param3) + sizeof(*pdata3) + psize;
++	} else {
++		opcode = AFE_PORT_CMD_SET_PARAM_V2;
++		pkt_size = APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata) + psize;
++	}
++
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+ 		return -ENOMEM;
+ 
+ 	pkt = p;
+-	param = p + APR_HDR_SIZE;
+-	pdata = p + APR_HDR_SIZE + sizeof(*param);
+-	pl = p + APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata);
+-	memcpy(pl, data, psize);
+-
+ 	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+ 					   APR_HDR_LEN(APR_HDR_SIZE),
+ 					   APR_PKT_VER);
+@@ -1155,18 +1248,34 @@ static int q6afe_port_set_param_v2(struct q6afe_port *port, void *data,
+ 	pkt->hdr.src_port = 0;
+ 	pkt->hdr.dest_port = 0;
+ 	pkt->hdr.token = port->token;
+-	pkt->hdr.opcode = AFE_PORT_CMD_SET_PARAM_V2;
+-
+-	param->port_id = port_id;
+-	param->payload_size = sizeof(*pdata) + psize;
+-	param->payload_address_lsw = 0x00;
+-	param->payload_address_msw = 0x00;
+-	param->mem_map_handle = 0x00;
+-	pdata->module_id = module_id;
+-	pdata->param_id = param_id;
+-	pdata->param_size = psize;
++	pkt->hdr.opcode = opcode;
++
++	if (set_param_v3) {
++		param3 = p + APR_HDR_SIZE;
++		pdata3 = p + APR_HDR_SIZE + sizeof(*param3);
++		pl = p + APR_HDR_SIZE + sizeof(*param3) + sizeof(*pdata3);
++		param3->port_id = port_id;
++		param3->payload_size = sizeof(*pdata3) + psize;
++		pdata3->module_id = module_id;
++		pdata3->param_id = param_id;
++		pdata3->param_size = psize;
++	} else {
++		param = p + APR_HDR_SIZE;
++		pdata = p + APR_HDR_SIZE + sizeof(*param);
++		pl = p + APR_HDR_SIZE + sizeof(*param) + sizeof(*pdata);
++		param->port_id = port_id;
++		param->payload_size = sizeof(*pdata) + psize;
++		pdata->module_id = module_id;
++		pdata->param_id = param_id;
++		pdata->param_size = psize;
++	}
++	/*
++	 * psize can be larger than the data we have when we are padding a
++	 * payload out to the vendor's size; the rest is already zeroed.
++	 */
++	memcpy(pl, data, min_t(int, psize, copy_size));
+ 
+-	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMD_SET_PARAM_V2);
++	ret = afe_apr_send_pkt(afe, pkt, port, opcode);
+ 	if (ret)
+ 		dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
+ 		       port_id, ret);
+@@ -1218,6 +1327,27 @@ int q6afe_set_lpass_clock(struct device *dev, int clk_id, int attri,
+ }
+ EXPORT_SYMBOL_GPL(q6afe_set_lpass_clock);
+ 
++/**
++ * q6afe_send_generic_param() - send an arbitrary AFE module/param payload
++ * to an already-open port.
++ *
++ * @port: an existing, currently-open port (e.g. borrowed via
++ *        q6afe_dai_get_port() - callers must NOT pass a port obtained via
++ *        q6afe_port_get_from_id() and then put() it themselves here, this
++ *        function does not take ownership of @port).
++ *
++ * Experimental: lets a machine/codec driver register a vendor-specific
++ * AFE module (e.g. a smart-amp protection algorithm) via the same generic
++ * AFE_PORT_CMD_SET_PARAM_V2 mechanism already used internally for clocks/
++ * I2S/USB/HDMI config.
++ */
++int q6afe_send_generic_param(struct q6afe_port *port, u32 module_id,
++			      u32 param_id, void *data, int psize)
++{
++	return q6afe_port_set_param_v2(port, data, param_id, module_id, psize);
++}
++EXPORT_SYMBOL_GPL(q6afe_send_generic_param);
++
+ int q6afe_port_set_sysclk(struct q6afe_port *port, int clk_id,
+ 			  int clk_src, int clk_root,
+ 			  unsigned int freq, int dir)
+@@ -1279,6 +1409,97 @@ EXPORT_SYMBOL_GPL(q6afe_port_set_sysclk);
+  *
+  * Return: Will be an negative on packet size on success.
+  */
++/*
++ * Pseudo ports use the standard config + device start/stop flow, but their
++ * config payload must be sized exactly (the vendor stack never sends the
++ * whole union for them).
++ */
++static bool q6afe_port_is_pseudo(int port_id)
++{
++	return port_id == AFE_PORT_ID_VOICE_RECORD_RX ||
++	       port_id == AFE_PORT_ID_VOICE_RECORD_TX ||
++	       port_id == AFE_PORT_ID_VOICE_PLAYBACK_TX;
++}
++
++/*
++ * The AFE topology of the in-call injection port.
++ *
++ * The factory stack was caught doing this and nothing else different: for the
++ * injection port 0x8005 it looks a topology up in ACDB and sets it (0x112fc on
++ * the reference device), while for the record ports it finds none and sets
++ * none. That matches exactly what we see here - the record taps work, and the
++ * injection is accepted and consumed but never mixed into the uplink.
++ *
++ * There is no ACDB on this side, so the value is a module parameter; 0 keeps
++ * the previous behaviour of not sending it at all.
++ */
++#define AFE_PARAM_ID_SET_TOPOLOGY	0x0001025A
++#define AFE_API_VERSION_TOPOLOGY_V1	0x1
++
++struct afe_param_id_set_topology_cfg {
++	u32 minor_version;
++	u32 topology_id;
++} __packed;
++
++static uint playback_topology = 0x000112fc;
++module_param(playback_topology, uint, 0644);
++MODULE_PARM_DESC(playback_topology,
++		 "AFE topology for the in-call injection port (0 = send none)");
++
++static int q6afe_pseudo_port_set_topology(struct q6afe_port *port)
++{
++	struct afe_param_id_set_topology_cfg topology;
++
++	if (port->id != AFE_PORT_ID_VOICE_PLAYBACK_TX || !playback_topology)
++		return 0;
++
++	topology.minor_version = AFE_API_VERSION_TOPOLOGY_V1;
++	topology.topology_id = playback_topology;
++
++	return q6afe_port_set_param_v2(port, &topology,
++				       AFE_PARAM_ID_SET_TOPOLOGY,
++				       AFE_MODULE_AUDIO_DEV_INTERFACE,
++				       sizeof(topology));
++}
++
++/*
++ * The hardware delay of the in-call injection port.
++ *
++ * The factory stack sends this for every port and the injection one gets a
++ * real value out of ACDB (474 us on the reference device, while the record
++ * ports get zero). It is how the DSP lines the injected stream up with the
++ * vocoder, and it was the only parameter of the three it sends that we were
++ * not sending at all.
++ */
++#define AFE_PARAM_ID_DEVICE_HW_DELAY		0x00010243
++#define AFE_API_VERSION_DEVICE_HW_DELAY		0x1
++
++struct afe_param_id_device_hw_delay_cfg {
++	u32 minor_version;
++	u32 delay_in_us;
++} __packed;
++
++static uint playback_hw_delay_us = 474;
++module_param(playback_hw_delay_us, uint, 0644);
++MODULE_PARM_DESC(playback_hw_delay_us,
++		 "hardware delay of the in-call injection port, in us (0 = send none)");
++
++static int q6afe_pseudo_port_set_hw_delay(struct q6afe_port *port)
++{
++	struct afe_param_id_device_hw_delay_cfg delay;
++
++	if (port->id != AFE_PORT_ID_VOICE_PLAYBACK_TX || !playback_hw_delay_us)
++		return 0;
++
++	delay.minor_version = AFE_API_VERSION_DEVICE_HW_DELAY;
++	delay.delay_in_us = playback_hw_delay_us;
++
++	return q6afe_port_set_param_v2(port, &delay,
++				       AFE_PARAM_ID_DEVICE_HW_DELAY,
++				       AFE_MODULE_AUDIO_DEV_INTERFACE,
++				       sizeof(delay));
++}
++
+ int q6afe_port_stop(struct q6afe_port *port)
+ {
+ 	struct afe_port_cmd_device_stop *stop;
+@@ -1328,12 +1549,31 @@ EXPORT_SYMBOL_GPL(q6afe_port_stop);
+  * @cfg: SLIM configuration for the afe port
+  *
+  */
++/*
++ * The SLIMBus block the port belongs to, and the format the hardware should
++ * assume. Neither was ever filled in: the config went out with both fields
++ * zeroed, and the ADSP acknowledged it happily while the port never moved a
++ * single frame - no error anywhere, the port simply never ran.
++ *
++ * Block 1 is what makes it work here, and it is what the downstream driver
++ * sends for every SLIMBus port. Left writable because it is a property of the
++ * board and finding it again would otherwise cost a reboot per guess.
++ */
++static ushort slim_dev_id = 1;
++module_param(slim_dev_id, ushort, 0644);
++MODULE_PARM_DESC(slim_dev_id, "SLIMBus hardware block for SLIMBus AFE ports");
++
++static ushort slim_data_format;
++module_param(slim_data_format, ushort, 0644);
++MODULE_PARM_DESC(slim_data_format, "data format for SLIMBus AFE ports");
++
+ void q6afe_slim_port_prepare(struct q6afe_port *port,
+ 			     struct q6afe_slim_cfg *cfg)
+ {
+ 	union afe_port_config *pcfg = &port->port_cfg;
+ 
+ 	pcfg->slim_cfg.sb_cfg_minor_version = AFE_API_VERSION_SLIMBUS_CONFIG;
++	pcfg->slim_cfg.slimbus_dev_id = slim_dev_id;
+ 	pcfg->slim_cfg.sample_rate = cfg->sample_rate;
+ 	pcfg->slim_cfg.bit_width = cfg->bit_width;
+ 	pcfg->slim_cfg.num_channels = cfg->num_channels;
+@@ -1343,6 +1583,18 @@ void q6afe_slim_port_prepare(struct q6afe_port *port,
+ 	pcfg->slim_cfg.shared_ch_mapping[2] = cfg->ch_mapping[2];
+ 	pcfg->slim_cfg.shared_ch_mapping[3] = cfg->ch_mapping[3];
+ 
++	if (slim_data_format)
++		pcfg->slim_cfg.data_format = slim_data_format;
++
++	dev_info(port->afe->dev,
++		 "slim port %d cfg: dev_id %u fmt %u rate %u bits %u ch %u map %u,%u,%u,%u\n",
++		 port->id, pcfg->slim_cfg.slimbus_dev_id,
++		 pcfg->slim_cfg.data_format, pcfg->slim_cfg.sample_rate,
++		 pcfg->slim_cfg.bit_width, pcfg->slim_cfg.num_channels,
++		 pcfg->slim_cfg.shared_ch_mapping[0],
++		 pcfg->slim_cfg.shared_ch_mapping[1],
++		 pcfg->slim_cfg.shared_ch_mapping[2],
++		 pcfg->slim_cfg.shared_ch_mapping[3]);
+ }
+ EXPORT_SYMBOL_GPL(q6afe_slim_port_prepare);
+ 
+@@ -1661,6 +1913,28 @@ void q6afe_cdc_dma_port_prepare(struct q6afe_port *port,
+ 		dma_cfg->active_channels_mask = (1 << cfg->num_channels) - 1;
+ }
+ EXPORT_SYMBOL_GPL(q6afe_cdc_dma_port_prepare);
++
++/**
++ * q6afe_pseudo_port_prepare() - Prepare a voice record/playback pseudo port
++ *
++ * @port: Instance of afe port
++ * @num_channels: number of channels
++ * @sample_rate: sample rate
++ */
++void q6afe_pseudo_port_prepare(struct q6afe_port *port, int num_channels,
++			       int sample_rate)
++{
++	struct afe_param_id_pseudo_port_cfg *cfg = &port->port_cfg.pseudo_cfg;
++
++	cfg->cfg_minor_version = AFE_API_VERSION_PSEUDO_PORT_CONFIG;
++	cfg->bit_width = 16;	/* the only width the DSP supports here */
++	cfg->num_channels = num_channels;
++	cfg->data_format = 0;
++	cfg->timing_mode = AFE_PSEUDOPORT_TIMING_MODE_TIMER;
++	cfg->sample_rate = sample_rate;
++}
++EXPORT_SYMBOL_GPL(q6afe_pseudo_port_prepare);
++
+ /**
+  * q6afe_port_start() - Start a afe port
+  *
+@@ -1675,17 +1949,55 @@ int q6afe_port_start(struct q6afe_port *port)
+ 	int port_id = port->id;
+ 	int ret, param_id = port->cfg_type;
+ 	struct apr_pkt *pkt;
++	bool is_pseudo;
++	int cfg_size;
+ 	int pkt_size;
+ 
++	/*
++	 * The vendor's order for a pseudo port is topology, then the hardware
++	 * delay, and the port configuration LAST; we had it the other way
++	 * round. And it sends the whole configuration union for them, not just
++	 * the bytes the structure needs.
++	 */
++	is_pseudo = q6afe_port_is_pseudo(port_id);
++	cfg_size = sizeof(port->port_cfg);
++	if (is_pseudo)
++		cfg_size = pseudo_cfg_full ? AFE_VENDOR_PORT_CFG_SIZE :
++					     sizeof(port->port_cfg.pseudo_cfg);
++
++	if (is_pseudo && pseudo_cfg_last) {
++		ret = q6afe_pseudo_port_set_topology(port);
++		if (ret)
++			dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
++				port_id, ret);
++
++		ret = q6afe_pseudo_port_set_hw_delay(port);
++		if (ret)
++			dev_err(afe->dev, "AFE hw delay for port 0x%x failed %d\n",
++				port_id, ret);
++	}
++
+ 	ret  = q6afe_port_set_param_v2(port, &port->port_cfg, param_id,
+ 				       AFE_MODULE_AUDIO_DEV_INTERFACE,
+-				       sizeof(port->port_cfg));
++				       cfg_size);
+ 	if (ret) {
+ 		dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
+ 			port_id, ret);
+ 		return ret;
+ 	}
+ 
++	if (is_pseudo && !pseudo_cfg_last) {
++		ret = q6afe_pseudo_port_set_topology(port);
++		if (ret)
++			dev_err(afe->dev, "AFE topology for port 0x%x failed %d\n",
++				port_id, ret);
++
++		ret = q6afe_pseudo_port_set_hw_delay(port);
++		if (ret)
++			dev_err(afe->dev, "AFE hw delay for port 0x%x failed %d\n",
++				port_id, ret);
++	}
++
+ 	if (port->scfg) {
+ 		ret  = q6afe_port_set_param_v2(port, port->scfg,
+ 					AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG,
+@@ -1760,6 +2072,11 @@ struct q6afe_port *q6afe_port_get_from_id(struct device *dev, int id)
+ 	case AFE_PORT_ID_HDMI_OVER_DP_RX:
+ 		cfg_type = AFE_PARAM_ID_HDMI_CONFIG;
+ 		break;
++	case AFE_PORT_ID_VOICE_RECORD_RX:
++	case AFE_PORT_ID_VOICE_RECORD_TX:
++	case AFE_PORT_ID_VOICE_PLAYBACK_TX:
++		cfg_type = AFE_PARAM_ID_PSEUDO_PORT_CONFIG;
++		break;
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_0_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_1_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_2_TX:
+@@ -1767,6 +2084,7 @@ struct q6afe_port *q6afe_port_get_from_id(struct device *dev, int id)
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_4_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_5_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_TX:
++	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_TX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_0_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_1_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_2_RX:
+@@ -1774,6 +2092,7 @@ struct q6afe_port *q6afe_port_get_from_id(struct device *dev, int id)
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_4_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_5_RX:
+ 	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_6_RX:
++	case AFE_PORT_ID_SLIMBUS_MULTI_CHAN_7_RX:
+ 		cfg_type = AFE_PARAM_ID_SLIMBUS_CONFIG;
+ 		break;
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6afe.h b/sound/soc/qcom/qdsp6/q6afe.h
+index 0b8c3ec13..39bb9c079 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.h
++++ b/sound/soc/qcom/qdsp6/q6afe.h
+@@ -235,6 +235,11 @@ struct q6afe_usb_cfg {
+ 	u16	num_channels;
+ };
+ 
++struct q6afe_pseudo_cfg {
++	u16	num_channels;
++	u32	sample_rate;
++};
++
+ struct q6afe_port_config {
+ 	struct q6afe_hdmi_cfg hdmi;
+ 	struct q6afe_slim_cfg slim;
+@@ -242,6 +247,7 @@ struct q6afe_port_config {
+ 	struct q6afe_tdm_cfg tdm;
+ 	struct q6afe_cdc_dma_cfg dma_cfg;
+ 	struct q6afe_usb_cfg usb_audio;
++	struct q6afe_pseudo_cfg pseudo;
+ };
+ 
+ struct q6afe_port;
+@@ -261,6 +267,8 @@ int q6afe_i2s_port_prepare(struct q6afe_port *port, struct q6afe_i2s_cfg *cfg);
+ void q6afe_tdm_port_prepare(struct q6afe_port *port, struct q6afe_tdm_cfg *cfg);
+ void q6afe_cdc_dma_port_prepare(struct q6afe_port *port,
+ 				struct q6afe_cdc_dma_cfg *cfg);
++void q6afe_pseudo_port_prepare(struct q6afe_port *port, int num_channels,
++			       int sample_rate);
+ 
+ int afe_port_send_usb_dev_param(struct q6afe_port *port, int cardidx, int pcmidx);
+ int q6afe_port_set_sysclk(struct q6afe_port *port, int clk_id,
+@@ -268,6 +276,9 @@ int q6afe_port_set_sysclk(struct q6afe_port *port, int clk_id,
+ 			  unsigned int freq, int dir);
+ int q6afe_set_lpass_clock(struct device *dev, int clk_id, int attri,
+ 			  int clk_root, unsigned int freq);
++int q6afe_send_generic_param(struct q6afe_port *port, u32 module_id,
++			      u32 param_id, void *data, int psize);
++struct q6afe_port *q6afe_dai_get_port(struct snd_soc_dai *dai);
+ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
+ 			     const char *client_name, uint32_t *client_handle);
+ int q6afe_unvote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
+diff --git a/sound/soc/qcom/qdsp6/q6asm-dai.c b/sound/soc/qcom/qdsp6/q6asm-dai.c
+index 4f09fdd40..f3d0a438e 100644
+--- a/sound/soc/qcom/qdsp6/q6asm-dai.c
++++ b/sound/soc/qcom/qdsp6/q6asm-dai.c
+@@ -46,6 +46,13 @@
+ enum stream_state {
+ 	Q6ASM_STREAM_IDLE = 0,
+ 	Q6ASM_STREAM_STOPPED,
++	/*
++	 * La sesion existe en el DSP pero aun no se ha disparado. Hace falta
++	 * distinguirlo de STOPPED: si prepare() vuelve a pasar por aqui sin
++	 * cerrar antes, el DSP rechaza la segunda apertura con ADSP_EALREADY
++	 * y el flujo se queda inservible.
++	 */
++	Q6ASM_STREAM_OPENED,
+ 	Q6ASM_STREAM_RUNNING,
+ };
+ 
+@@ -71,6 +78,11 @@ struct q6asm_dai_rtd {
+ 	uint32_t stream_id;
+ 	uint16_t session_id;
+ 	enum stream_state state;
++	/* What the DSP was last told, to know whether a prepare changes it. */
++	unsigned int prepared_rate;
++	unsigned int prepared_channels;
++	unsigned int prepared_pcm_count;
++	uint16_t prepared_bits;
+ 	uint32_t initial_samples_drop;
+ 	uint32_t trailing_samples_drop;
+ 	bool notify_on_drain;
+@@ -201,6 +213,16 @@ static void event_handler(uint32_t opcode, uint32_t token,
+ 	}
+ }
+ 
++/*
++ * Whether a second prepare() with nothing changed keeps the DSP session
++ * instead of tearing it down and opening it again. On by default; the vendor
++ * stack opens the session once.
++ */
++static bool reprepare_reopens = true;
++module_param(reprepare_reopens, bool, 0644);
++MODULE_PARM_DESC(reprepare_reopens,
++		 "keep the DSP session when prepare() changes nothing");
++
+ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 			     struct snd_pcm_substream *substream)
+ {
+@@ -222,8 +244,29 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 	}
+ 
+ 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
++
++	/*
++	 * ALSA prepares a stream more than once - when it is set up and again
++	 * before it is started - and we tore the DSP session down and built it
++	 * again every single time, while the vendor stack opens it once.
++	 *
++	 * That is not just waste: the in-call playback the DSP was told about
++	 * stays bound to the session that existed when it was started, so a
++	 * needless reopen leaves the DSP reading a session nobody writes to.
++	 * Only redo the session when something the DSP was told has changed.
++	 */
++	if (reprepare_reopens && prtd->state == Q6ASM_STREAM_RUNNING &&
++	    prtd->prepared_rate == runtime->rate &&
++	    prtd->prepared_channels == runtime->channels &&
++	    prtd->prepared_bits == prtd->bits_per_sample &&
++	    prtd->prepared_pcm_count == prtd->pcm_count) {
++		dev_dbg(dev, "prepare with nothing changed, keeping the session\n");
++		return 0;
++	}
++
+ 	/* rate and channels are sent to audio driver */
+-	if (prtd->state == Q6ASM_STREAM_RUNNING) {
++	if (prtd->state == Q6ASM_STREAM_RUNNING ||
++	    prtd->state == Q6ASM_STREAM_OPENED) {
+ 		/* clear the previous setup if any  */
+ 		ret = q6asm_cmd(prtd->audio_client, prtd->stream_id, CMD_CLOSE);
+ 		if (ret < 0) {
+@@ -269,6 +312,14 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 		goto open_err;
+ 	}
+ 
++	/*
++	 * Anotarlo YA: si algo de lo que viene despues falla, la sesion sigue
++	 * abierta en el DSP, y sin esta marca el siguiente prepare() no la
++	 * cierra y el DSP rechaza la reapertura con ADSP_EALREADY, dejando el
++	 * flujo inservible para siempre.
++	 */
++	prtd->state = Q6ASM_STREAM_OPENED;
++
+ 	prtd->session_id = q6asm_get_session_id(prtd->audio_client);
+ 	ret = q6routing_stream_open(soc_prtd->dai_link->id, LEGACY_PCM_MODE,
+ 			      prtd->session_id, substream->stream);
+@@ -294,10 +345,15 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
+ 			q6asm_read(prtd->audio_client, prtd->stream_id);
+ 
+ 	}
+-	if (ret < 0)
++	if (ret < 0) {
+ 		dev_info(dev, "%s: CMD Format block failed\n", __func__);
+-	else
++	} else {
+ 		prtd->state = Q6ASM_STREAM_RUNNING;
++		prtd->prepared_rate = runtime->rate;
++		prtd->prepared_channels = runtime->channels;
++		prtd->prepared_bits = prtd->bits_per_sample;
++		prtd->prepared_pcm_count = prtd->pcm_count;
++	}
+ 
+ 	return ret;
+ 
+diff --git a/sound/soc/qcom/qdsp6/q6asm.c b/sound/soc/qcom/qdsp6/q6asm.c
+index de0bd8fd0..1409b5f88 100644
+--- a/sound/soc/qcom/qdsp6/q6asm.c
++++ b/sound/soc/qcom/qdsp6/q6asm.c
+@@ -99,6 +99,42 @@ struct asm_multi_channel_pcm_fmt_blk_v2 {
+ 	u8 channel_mapping[PCM_MAX_NUM_CHANNEL];
+ } __packed;
+ 
++/*
++ * The vendor stack opens its streams with v5 of the PCM format and sends a
++ * 48 byte format block; mainline has always used v2 and a 20 byte one. Same
++ * fields up front, then the word size, the endianness, a mode, and room for
++ * 32 channels instead of 8.
++ */
++#define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V5	0x00013222
++#define PCM_MAX_NUM_CHANNEL_V5			32
++
++/*
++ * Whether PCM streams are opened with v5 of the format, like the vendor stack,
++ * instead of the v2 mainline has always used. It changes the size of the
++ * format block the DSP is given (48 bytes against 20), so a DSP that only
++ * expects v5 on a path would be reading our block wrong.
++ */
++static uint popp_topology;
++module_param(popp_topology, uint, 0644);
++MODULE_PARM_DESC(popp_topology,
++		 "stream post-processing topology (0 = none, as mainline always did)");
++
++static bool pcm_fmt_v5 = true;
++module_param(pcm_fmt_v5, bool, 0644);
++MODULE_PARM_DESC(pcm_fmt_v5, "open PCM streams with media format v5 (vendor) instead of v2");
++
++struct asm_multi_channel_pcm_fmt_blk_v5 {
++	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
++	u16 num_channels;
++	u16 bits_per_sample;
++	u32 sample_rate;
++	u16 is_signed;
++	u16 sample_word_size;
++	u16 endianness;
++	u16 mode;
++	u8 channel_mapping[PCM_MAX_NUM_CHANNEL_V5];
++} __packed;
++
+ struct asm_flac_fmt_blk_v2 {
+ 	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
+ 	u16 is_stream_info_present;
+@@ -946,14 +982,22 @@ int q6asm_open_write(struct audio_client *ac, uint32_t stream_id,
+ 	/* source endpoint : matrix */
+ 	open->sink_endpointype = ASM_END_POINT_DEVICE_MATRIX;
+ 	open->bits_per_sample = bits_per_sample;
+-	open->postprocopo_id = ASM_NULL_POPP_TOPOLOGY;
++	/*
++	 * The vendor opens its in-call streams with a post-processing topology
++	 * of its own (0x10000018 on the reference device), out of ACDB, where
++	 * we have always asked for none. It is the last field of the whole
++	 * command stream that still differs, so it is a parameter to try.
++	 */
++	open->postprocopo_id = popp_topology ? popp_topology
++					     : ASM_NULL_POPP_TOPOLOGY;
+ 
+ 	switch (format) {
+ 	case SND_AUDIOCODEC_MP3:
+ 		open->dec_fmt_id = ASM_MEDIA_FMT_MP3;
+ 		break;
+ 	case FORMAT_LINEAR_PCM:
+-		open->dec_fmt_id = ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2;
++		open->dec_fmt_id = pcm_fmt_v5 ? ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V5
++					      : ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2;
+ 		break;
+ 	case SND_AUDIOCODEC_FLAC:
+ 		open->dec_fmt_id = ASM_MEDIA_FMT_FLAC;
+@@ -1085,31 +1129,48 @@ int q6asm_media_format_block_multi_ch_pcm(struct audio_client *ac,
+ 					  u8 channel_map[PCM_MAX_NUM_CHANNEL],
+ 					  uint16_t bits_per_sample)
+ {
++	struct asm_multi_channel_pcm_fmt_blk_v5 *fmt5;
+ 	struct asm_multi_channel_pcm_fmt_blk_v2 *fmt;
+ 	struct apr_pkt *pkt;
+ 	u8 *channel_mapping;
+-	int pkt_size = APR_HDR_SIZE + sizeof(*fmt);
++	int map_size, pkt_size;
++
++	pkt_size = APR_HDR_SIZE + (pcm_fmt_v5 ? sizeof(*fmt5) : sizeof(*fmt));
+ 
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+ 	if (!p)
+ 		return -ENOMEM;
+ 
+ 	pkt = p;
+-	fmt = p + APR_HDR_SIZE;
+ 
+ 	q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, stream_id);
+-
+ 	pkt->hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
+-	fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
+-	fmt->num_channels = channels;
+-	fmt->bits_per_sample = bits_per_sample;
+-	fmt->sample_rate = rate;
+-	fmt->is_signed = 1;
+ 
+-	channel_mapping = fmt->channel_mapping;
++	if (pcm_fmt_v5) {
++		fmt5 = p + APR_HDR_SIZE;
++		fmt5->fmt_blk.fmt_blk_size = sizeof(*fmt5) - sizeof(fmt5->fmt_blk);
++		fmt5->num_channels = channels;
++		fmt5->bits_per_sample = bits_per_sample;
++		fmt5->sample_rate = rate;
++		fmt5->is_signed = 1;
++		/* The vendor sends the sample width again here, and 0 for the rest. */
++		fmt5->sample_word_size = bits_per_sample;
++		channel_mapping = fmt5->channel_mapping;
++		map_size = PCM_MAX_NUM_CHANNEL_V5;
++	} else {
++		fmt = p + APR_HDR_SIZE;
++		fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
++		fmt->num_channels = channels;
++		fmt->bits_per_sample = bits_per_sample;
++		fmt->sample_rate = rate;
++		fmt->is_signed = 1;
++		channel_mapping = fmt->channel_mapping;
++		map_size = PCM_MAX_NUM_CHANNEL;
++	}
+ 
+ 	if (channel_map) {
+-		memcpy(channel_mapping, channel_map, PCM_MAX_NUM_CHANNEL);
++		memcpy(channel_mapping, channel_map,
++		       min(map_size, PCM_MAX_NUM_CHANNEL));
+ 	} else {
+ 		if (q6dsp_map_channels(channel_mapping, channels)) {
+ 			dev_err(ac->dev, " map channels failed %d\n", channels);
+diff --git a/sound/soc/qcom/qdsp6/q6core.c b/sound/soc/qcom/qdsp6/q6core.c
+index 48825756a..5574555e3 100644
+--- a/sound/soc/qcom/qdsp6/q6core.c
++++ b/sound/soc/qcom/qdsp6/q6core.c
+@@ -11,6 +11,9 @@
+ #include <linux/of_platform.h>
+ #include <linux/jiffies.h>
+ #include <linux/soc/qcom/apr.h>
++#include <linux/dma-mapping.h>
++#include <linux/firmware.h>
++#include <linux/platform_device.h>
+ #include "q6core.h"
+ #include "q6dsp-errno.h"
+ 
+@@ -20,9 +23,71 @@
+ #define AVCS_CMDRSP_ADSP_EVENT_GET_STATE	0x0001290D
+ #define AVCS_GET_VERSIONS       0x00012905
+ #define AVCS_GET_VERSIONS_RSP   0x00012906
++/*
++ * Ask the DSP to load the modules a topology needs.
++ *
++ * The vendor's own topologies (the in-call injection uses 0x10000018) are not
++ * built into the DSP: they are described in the vendor's ACDB and their code
++ * lives in .so files the DSP loads on demand. Without that, asking for one of
++ * them gets ADSP_EUNSUPPORTED, which is exactly what we see. This is the
++ * cheapest way to find out whether the DSP can bring them up on its own.
++ */
++#define AVCS_CMD_LOAD_TOPO_MODULES	0x0001296C
++#define AVCS_CMD_UNLOAD_TOPO_MODULES	0x0001296D
++
+ #define AVCS_CMD_GET_FWK_VERSION	0x001292c
+ #define AVCS_CMDRSP_GET_FWK_VERSION	0x001292d
+ 
++/*
++ * Custom topologies: the vendor's voice and audio topologies are not built
++ * into the DSP, they are described in a blob its ACDB carries
++ * (CORE_CUSTOM_TOPOLOGIES) that has to be registered before any session asks
++ * for one of those topology IDs. Downstream does it as soon as the ACDB
++ * loader hands the blob over: map it into the DSP, deregister whatever was
++ * there, register it.
++ */
++#define AVCS_CMD_REGISTER_TOPOLOGIES		0x00012923
++#define AVCS_CMD_SHARED_MEM_MAP_REGIONS		0x00012924
++#define AVCS_CMDRSP_SHARED_MEM_MAP_REGIONS	0x00012925
++#define AVCS_CMD_SHARED_MEM_UNMAP_REGIONS	0x00012926
++#define AVCS_CMD_DEREGISTER_TOPOLOGIES		0x0001292a
++#define AVCS_MODE_DEREGISTER_ALL_CUSTOM_TOPOLOGIES	2
++#define ADSP_MEMORY_MAP_SHMEM8_4K_POOL		3
++#define Q6CORE_CMD_TIMEOUT_MS			1000
++#define Q6CORE_SID_MASK				0xF
++
++struct avcs_cmd_shared_mem_map_regions {
++	struct apr_hdr hdr;
++	u16 mem_pool_id;
++	u16 num_regions;
++	u32 property_flag;
++	u32 shm_addr_lsw;
++	u32 shm_addr_msw;
++	u32 mem_size_bytes;
++} __packed;
++
++struct avcs_cmd_shared_mem_unmap_regions {
++	struct apr_hdr hdr;
++	u32 mem_map_handle;
++} __packed;
++
++struct avcs_cmd_register_topologies {
++	struct apr_hdr hdr;
++	u32 payload_addr_lsw;
++	u32 payload_addr_msw;
++	u32 mem_map_handle;
++	u32 payload_size;
++} __packed;
++
++struct avcs_cmd_deregister_topologies {
++	struct apr_hdr hdr;
++	u32 payload_addr_lsw;
++	u32 payload_addr_msw;
++	u32 mem_map_handle;
++	u32 payload_size;
++	u32 mode;
++} __packed;
++
+ struct avcs_svc_info {
+ 	uint32_t service_id;
+ 	uint32_t version;
+@@ -63,6 +128,16 @@ struct q6core {
+ 	bool get_state_supported;
+ 	bool get_version_supported;
+ 	bool is_version_requested;
++
++	/* custom topologies registered with the DSP */
++	bool cmd_done;
++	int cmd_status;
++	u32 cmd_map_handle;
++	struct device *top_dev;
++	void *top_buf;
++	dma_addr_t top_dma;
++	size_t top_size;
++	u32 top_map_handle;
+ };
+ 
+ static struct q6core *g_core;
+@@ -88,6 +163,23 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
+ 				core->fwk_version_supported = false;
+ 			core->resp_received = true;
+ 			break;
++		case AVCS_CMD_LOAD_TOPO_MODULES:
++		case AVCS_CMD_UNLOAD_TOPO_MODULES:
++			dev_info(&adev->dev, "load topo modules: status %d\n",
++				 result->status);
++			core->resp_received = true;
++			wake_up(&core->wait);
++			break;
++		case AVCS_CMD_SHARED_MEM_MAP_REGIONS:
++		case AVCS_CMD_SHARED_MEM_UNMAP_REGIONS:
++		case AVCS_CMD_REGISTER_TOPOLOGIES:
++		case AVCS_CMD_DEREGISTER_TOPOLOGIES:
++			dev_info(&adev->dev, "cmd %#x: status %d\n",
++				 result->opcode, result->status);
++			core->cmd_status = result->status;
++			core->cmd_done = true;
++			wake_up(&core->wait);
++			break;
+ 		case AVCS_CMD_ADSP_EVENT_GET_STATE:
+ 			if (result->status == ADSP_EUNSUPPORTED)
+ 				core->get_state_supported = false;
+@@ -130,6 +222,16 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
+ 
+ 		break;
+ 	}
++	case AVCS_CMDRSP_SHARED_MEM_MAP_REGIONS: {
++		const u32 *handle = data->payload;
++
++		core->cmd_map_handle = data->payload_size >= sizeof(*handle) ?
++				       *handle : 0;
++		core->cmd_status = 0;
++		core->cmd_done = true;
++		wake_up(&core->wait);
++		break;
++	}
+ 	case AVCS_CMDRSP_ADSP_EVENT_GET_STATE:
+ 		core->get_state_supported = true;
+ 		core->avcs_state = result->opcode;
+@@ -178,6 +280,270 @@ static int q6core_get_fwk_versions(struct q6core *core)
+ 	return rc;
+ }
+ 
++/*
++ * Written to by hand (/sys/module/q6core/parameters/load_topology) to ask the
++ * DSP for a topology's modules and see what it answers.
++ */
++static struct q6core *q6core_dev;
++
++static int q6core_load_topo_modules(uint32_t topology_id, bool load)
++{
++	struct q6core *core = q6core_dev;
++	struct {
++		struct apr_hdr hdr;
++		u32 topology_id;
++	} __packed pkt;
++	int rc;
++
++	if (!core)
++		return -ENODEV;
++
++	memset(&pkt, 0, sizeof(pkt));
++	pkt.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++					  APR_HDR_LEN(APR_HDR_SIZE),
++					  APR_PKT_VER);
++	pkt.hdr.pkt_size = sizeof(pkt);
++	pkt.hdr.opcode = load ? AVCS_CMD_LOAD_TOPO_MODULES
++			      : AVCS_CMD_UNLOAD_TOPO_MODULES;
++	pkt.topology_id = topology_id;
++
++	mutex_lock(&core->lock);
++	core->resp_received = false;
++	rc = apr_send_pkt(core->adev, (struct apr_pkt *)&pkt);
++	if (rc >= 0)
++		rc = wait_event_timeout(core->wait, core->resp_received,
++					msecs_to_jiffies(Q6_READY_TIMEOUT_MS));
++	mutex_unlock(&core->lock);
++
++	dev_info(&core->adev->dev, "%s topology %#x: %d\n",
++		 load ? "load" : "unload", topology_id, rc);
++
++	return rc > 0 ? 0 : -ETIMEDOUT;
++}
++
++static int q6core_set_load_topology(const char *val,
++				    const struct kernel_param *kp)
++{
++	uint32_t id;
++	int rc;
++
++	rc = kstrtou32(val, 0, &id);
++	if (rc)
++		return rc;
++
++	return q6core_load_topo_modules(id, true);
++}
++
++static const struct kernel_param_ops q6core_load_topology_ops = {
++	.set = q6core_set_load_topology,
++};
++
++module_param_cb(load_topology, &q6core_load_topology_ops, NULL, 0200);
++MODULE_PARM_DESC(load_topology, "ask the DSP to load a topology's modules");
++
++static int q6core_send_wait(struct q6core *core, struct apr_pkt *pkt)
++{
++	int rc;
++
++	core->cmd_done = false;
++	core->cmd_status = 0;
++	rc = apr_send_pkt(core->adev, pkt);
++	if (rc < 0)
++		return rc;
++
++	rc = wait_event_timeout(core->wait, core->cmd_done,
++				msecs_to_jiffies(Q6CORE_CMD_TIMEOUT_MS));
++	if (!rc)
++		return -ETIMEDOUT;
++
++	/* the raw ADSP_E* status is already in the log, from the callback */
++	return core->cmd_status ? -EIO : 0;
++}
++
++static void q6core_init_hdr(struct apr_hdr *hdr, size_t size, u32 opcode)
++{
++	hdr->hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++				       APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
++	hdr->pkt_size = size;
++	hdr->opcode = opcode;
++}
++
++/*
++ * The DSP can only reach memory through the audio SMMU context that q6asm-dai
++ * uses for its buffers, and it wants the stream ID in the upper 32 bits of the
++ * address, exactly as q6asm-dai builds prtd->phys.
++ */
++static struct device *q6core_find_dma_dev(int *sid)
++{
++	struct of_phandle_args args;
++	struct platform_device *pdev;
++	struct device_node *np;
++
++	np = of_find_compatible_node(NULL, NULL, "qcom,q6asm-dais");
++	if (!np)
++		return NULL;
++
++	if (of_parse_phandle_with_fixed_args(np, "iommus", 1, 0, &args)) {
++		*sid = -1;
++	} else {
++		*sid = args.args[0] & Q6CORE_SID_MASK;
++		of_node_put(args.np);
++	}
++
++	pdev = of_find_device_by_node(np);
++	of_node_put(np);
++
++	return pdev ? &pdev->dev : NULL;
++}
++
++static void q6core_release_custom_topologies(struct q6core *core)
++{
++	struct avcs_cmd_deregister_topologies dereg = {};
++	struct avcs_cmd_shared_mem_unmap_regions unmap = {};
++	int rc;
++
++	if (!core->top_buf)
++		return;
++
++	q6core_init_hdr(&dereg.hdr, sizeof(dereg), AVCS_CMD_DEREGISTER_TOPOLOGIES);
++	dereg.mode = AVCS_MODE_DEREGISTER_ALL_CUSTOM_TOPOLOGIES;
++	rc = q6core_send_wait(core, (struct apr_pkt *)&dereg);
++	if (rc)
++		dev_warn(&core->adev->dev, "deregister topologies: %d\n", rc);
++
++	if (core->top_map_handle) {
++		q6core_init_hdr(&unmap.hdr, sizeof(unmap),
++				AVCS_CMD_SHARED_MEM_UNMAP_REGIONS);
++		unmap.mem_map_handle = core->top_map_handle;
++		rc = q6core_send_wait(core, (struct apr_pkt *)&unmap);
++		if (rc)
++			dev_warn(&core->adev->dev, "unmap topologies: %d\n", rc);
++	}
++
++	dma_free_coherent(core->top_dev, core->top_size, core->top_buf,
++			  core->top_dma);
++	put_device(core->top_dev);
++	core->top_dev = NULL;
++	core->top_buf = NULL;
++	core->top_map_handle = 0;
++}
++
++static int q6core_register_custom_topologies(struct q6core *core,
++					     const char *name)
++{
++	struct avcs_cmd_shared_mem_map_regions map = {};
++	struct avcs_cmd_register_topologies reg = {};
++	struct avcs_cmd_deregister_topologies dereg = {};
++	const struct firmware *fw;
++	u64 dsp_addr;
++	int sid, rc;
++
++	rc = request_firmware(&fw, name, &core->adev->dev);
++	if (rc)
++		return rc;
++
++	q6core_release_custom_topologies(core);
++
++	/* as downstream: start from a clean slate */
++	q6core_init_hdr(&dereg.hdr, sizeof(dereg), AVCS_CMD_DEREGISTER_TOPOLOGIES);
++	dereg.mode = AVCS_MODE_DEREGISTER_ALL_CUSTOM_TOPOLOGIES;
++	rc = q6core_send_wait(core, (struct apr_pkt *)&dereg);
++	if (rc)
++		dev_info(&core->adev->dev, "initial deregister: %d\n", rc);
++
++	core->top_dev = q6core_find_dma_dev(&sid);
++	if (!core->top_dev) {
++		rc = -ENODEV;
++		goto out_fw;
++	}
++
++	core->top_size = PAGE_ALIGN(fw->size);
++	core->top_buf = dma_alloc_coherent(core->top_dev, core->top_size,
++					   &core->top_dma, GFP_KERNEL);
++	if (!core->top_buf) {
++		put_device(core->top_dev);
++		core->top_dev = NULL;
++		rc = -ENOMEM;
++		goto out_fw;
++	}
++	memcpy(core->top_buf, fw->data, fw->size);
++
++	dsp_addr = core->top_dma;
++	if (sid >= 0)
++		dsp_addr |= (u64)sid << 32;
++
++	q6core_init_hdr(&map.hdr, sizeof(map), AVCS_CMD_SHARED_MEM_MAP_REGIONS);
++	map.mem_pool_id = ADSP_MEMORY_MAP_SHMEM8_4K_POOL;
++	map.num_regions = 1;
++	map.shm_addr_lsw = lower_32_bits(dsp_addr);
++	map.shm_addr_msw = upper_32_bits(dsp_addr);
++	map.mem_size_bytes = core->top_size;
++	core->cmd_map_handle = 0;
++	rc = q6core_send_wait(core, (struct apr_pkt *)&map);
++	if (!rc && !core->cmd_map_handle)
++		rc = -EIO;
++	if (rc) {
++		dev_err(&core->adev->dev, "map topologies (%#llx, %zu): %d\n",
++			dsp_addr, core->top_size, rc);
++		goto out_free;
++	}
++	core->top_map_handle = core->cmd_map_handle;
++
++	q6core_init_hdr(&reg.hdr, sizeof(reg), AVCS_CMD_REGISTER_TOPOLOGIES);
++	reg.payload_addr_lsw = lower_32_bits(dsp_addr);
++	reg.payload_addr_msw = upper_32_bits(dsp_addr);
++	reg.mem_map_handle = core->top_map_handle;
++	reg.payload_size = fw->size;
++	rc = q6core_send_wait(core, (struct apr_pkt *)&reg);
++	dev_info(&core->adev->dev,
++		 "register custom topologies %s (%zu bytes, sid %d, handle %#x): %d\n",
++		 name, fw->size, sid, core->top_map_handle, rc);
++	if (rc)
++		goto out_free;
++
++	release_firmware(fw);
++	return 0;
++
++out_free:
++	q6core_release_custom_topologies(core);
++out_fw:
++	release_firmware(fw);
++	return rc;
++}
++
++static int q6core_set_custom_topologies(const char *val,
++					const struct kernel_param *kp)
++{
++	struct q6core *core = q6core_dev;
++	char name[128];
++	int rc;
++
++	if (!core)
++		return -ENODEV;
++
++	strscpy(name, val, sizeof(name));
++	strim(name);
++
++	mutex_lock(&core->lock);
++	if (!name[0] || !strcmp(name, "0")) {
++		q6core_release_custom_topologies(core);
++		rc = 0;
++	} else {
++		rc = q6core_register_custom_topologies(core, name);
++	}
++	mutex_unlock(&core->lock);
++
++	return rc;
++}
++
++static const struct kernel_param_ops q6core_custom_topologies_ops = {
++	.set = q6core_set_custom_topologies,
++};
++
++module_param_cb(custom_topologies, &q6core_custom_topologies_ops, NULL, 0200);
++MODULE_PARM_DESC(custom_topologies,
++		 "firmware file with the vendor's custom topologies to register with the DSP (0 releases them)");
++
+ static int q6core_get_svc_versions(struct q6core *core)
+ {
+ 	struct apr_device *adev = core->adev;
+@@ -336,6 +702,7 @@ static int q6core_probe(struct apr_device *adev)
+ 	mutex_init(&g_core->lock);
+ 	g_core->adev = adev;
+ 	init_waitqueue_head(&g_core->wait);
++	q6core_dev = g_core;
+ 	return 0;
+ }
+ 
+@@ -343,6 +710,12 @@ static void q6core_exit(struct apr_device *adev)
+ {
+ 	struct q6core *core = dev_get_drvdata(&adev->dev);
+ 
++	mutex_lock(&core->lock);
++	q6core_release_custom_topologies(core);
++	mutex_unlock(&core->lock);
++
++	q6core_dev = NULL;
++
+ 	if (core->fwk_version_supported)
+ 		kfree(core->fwk_version);
+ 	if (core->get_version_supported)
+diff --git a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
+index e5cd82f77..1d37fdc9f 100644
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.c
+@@ -382,8 +382,80 @@ static struct snd_soc_dai_driver q6dsp_audio_fe_dais[] = {
+ 			.channels_max = 8,
+ 			.rate_min = 8000,
+ 			.rate_max = 192000,
++		},	}, {
++		.playback = {
++			.stream_name = "Slimbus7 Playback",
++			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
++				 SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_96000 |
++				 SNDRV_PCM_RATE_192000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE |
++				   SNDRV_PCM_FMTBIT_S24_LE,
++			.channels_min = 1,
++			.channels_max = 2,
++			.rate_min = 8000,
++			.rate_max = 192000,
++		},
++		.name = "SLIMBUS_7_RX",
++		.id = SLIMBUS_7_RX,
++	}, {
++		.name = "SLIMBUS_7_TX",
++		.id = SLIMBUS_7_TX,
++		.capture = {
++			.stream_name = "Slimbus7 Capture",
++			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
++				 SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_96000 |
++				 SNDRV_PCM_RATE_192000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE |
++				   SNDRV_PCM_FMTBIT_S24_LE,
++			.channels_min = 1,
++			.channels_max = 8,
++			.rate_min = 8000,
++			.rate_max = 192000,
++		},
++		}, {
++		/*
++		 * Pseudo ports: the DSP's copy of a phone call. Mono 8/16 kHz
++		 * because that is what the vocoder produces.
++		 */
++		.name = "VOICE_RECORD_RX",
++		.id = VOICE_RECORD_RX,
++		.capture = {
++			.stream_name = "Voice Downlink Capture",
++			.rates = SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++				 SNDRV_PCM_RATE_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 48000,
+ 		},
+ 	}, {
++		.name = "VOICE_RECORD_TX",
++		.id = VOICE_RECORD_TX,
++		.capture = {
++			.stream_name = "Voice Uplink Capture",
++			.rates = SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++				 SNDRV_PCM_RATE_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 48000,
++		},
++	}, {
++		.name = "VOICE_PLAYBACK_TX",
++		.id = VOICE_PLAYBACK_TX,
++		.playback = {
++			.stream_name = "Voice Farend Playback",
++			.rates = SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |
++				 SNDRV_PCM_RATE_48000,
++			.formats = SNDRV_PCM_FMTBIT_S16_LE,
++			.channels_min = 1,
++			.channels_max = 1,
++			.rate_min = 8000,
++			.rate_max = 48000,
++		},
++}, {
+ 		.playback = {
+ 			.stream_name = "Primary MI2S Playback",
+ 			.rates = SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_8000 |
+@@ -706,8 +778,14 @@ struct snd_soc_dai_driver *q6dsp_audio_ports_set_config(struct device *dev,
+ 			q6dsp_audio_fe_dais[i].ops = cfg->q6hdmi_ops;
+ 			break;
+ 		case SLIMBUS_0_RX ... SLIMBUS_6_TX:
++		/* Appended after the MI2S block, so outside the range above. */
++		case SLIMBUS_7_RX:
++		case SLIMBUS_7_TX:
+ 			q6dsp_audio_fe_dais[i].ops = cfg->q6slim_ops;
+ 			break;
++		case VOICE_RECORD_RX ... VOICE_PLAYBACK_TX:
++			q6dsp_audio_fe_dais[i].ops = cfg->q6pseudo_ops;
++			break;
+ 		case SENARY_MI2S_RX ... SENARY_MI2S_TX:
+ 		case QUINARY_MI2S_RX ... QUINARY_MI2S_TX:
+ 		case PRIMARY_MI2S_RX ... QUATERNARY_MI2S_TX:
+diff --git a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.h b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.h
+index d8dde6dd0..8366f58c3 100644
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.h
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-ports.h
+@@ -12,6 +12,7 @@ struct q6dsp_audio_port_dai_driver_config {
+ 	const struct snd_soc_dai_ops *q6tdm_ops;
+ 	const struct snd_soc_dai_ops *q6dma_ops;
+ 	const struct snd_soc_dai_ops *q6usb_ops;
++	const struct snd_soc_dai_ops *q6pseudo_ops;
+ };
+ 
+ struct snd_soc_dai_driver *q6dsp_audio_ports_set_config(struct device *dev,
+diff --git a/sound/soc/qcom/qdsp6/q6routing.c b/sound/soc/qcom/qdsp6/q6routing.c
+index 55119cc33..e447a6ae8 100644
+--- a/sound/soc/qcom/qdsp6/q6routing.c
++++ b/sound/soc/qcom/qdsp6/q6routing.c
+@@ -23,6 +23,7 @@
+ #include "q6asm.h"
+ #include "q6adm.h"
+ #include "q6routing.h"
++#include "q6voice.h"
+ 
+ #define DRV_NAME "q6routing-component"
+ 
+@@ -77,6 +78,9 @@
+ 	{ mix_name, "SLIMBUS_4_TX", "SLIMBUS_4_TX" },		\
+ 	{ mix_name, "SLIMBUS_5_TX", "SLIMBUS_5_TX" },		\
+ 	{ mix_name, "SLIMBUS_6_TX", "SLIMBUS_6_TX" },		\
++	{ mix_name, "SLIMBUS_7_TX", "SLIMBUS_7_TX" },		\
++	{ mix_name, "VOC_REC_DL", "VOICE_RECORD_RX" },		\
++	{ mix_name, "VOC_REC_UL", "VOICE_RECORD_TX" },		\
+ 	{ mix_name, "PRIMARY_TDM_TX_0", "PRIMARY_TDM_TX_0"},	\
+ 	{ mix_name, "PRIMARY_TDM_TX_1", "PRIMARY_TDM_TX_1"},	\
+ 	{ mix_name, "PRIMARY_TDM_TX_2", "PRIMARY_TDM_TX_2"},	\
+@@ -170,6 +174,15 @@
+ 	SOC_SINGLE_EXT("SLIMBUS_6_TX", SLIMBUS_6_TX,			\
+ 		id, 1, 0, msm_routing_get_audio_mixer,			\
+ 		msm_routing_put_audio_mixer),				\
++	SOC_SINGLE_EXT("SLIMBUS_7_TX", SLIMBUS_7_TX,			\
++		id, 1, 0, msm_routing_get_audio_mixer,			\
++		msm_routing_put_audio_mixer),				\
++	SOC_SINGLE_EXT("VOC_REC_DL", VOICE_RECORD_RX,			\
++		id, 1, 0, msm_routing_get_audio_mixer,			\
++		msm_routing_put_audio_mixer),				\
++	SOC_SINGLE_EXT("VOC_REC_UL", VOICE_RECORD_TX,			\
++		id, 1, 0, msm_routing_get_audio_mixer,			\
++		msm_routing_put_audio_mixer),				\
+ 	SOC_SINGLE_EXT("PRIMARY_TDM_TX_0", PRIMARY_TDM_TX_0,		\
+ 		id, 1, 0, msm_routing_get_audio_mixer,			\
+ 		msm_routing_put_audio_mixer),				\
+@@ -352,6 +365,38 @@ struct msm_routing_data {
+ 
+ static struct msm_routing_data *routing_data;
+ 
++/*
++ * What the factory stack feeds the ADM for the in-call injection session.
++ *
++ * It picks the COPP topology out of ACDB from the front-end's app_type and
++ * acdb_id, and was caught opening the injection session with app_type 69937
++ * (the record one gets 69936). We have no ACDB, so these are knobs to sweep
++ * against the reference device; 0 keeps mainline's behaviour.
++ */
++static uint playback_copp_topology;
++module_param(playback_copp_topology, uint, 0644);
++MODULE_PARM_DESC(playback_copp_topology,
++		 "COPP topology for the in-call injection port (0 = NULL topology)");
++
++static uint playback_app_type;
++module_param(playback_app_type, uint, 0644);
++MODULE_PARM_DESC(playback_app_type, "app type for the in-call injection port");
++
++static uint playback_acdb_id;
++module_param(playback_acdb_id, uint, 0644);
++MODULE_PARM_DESC(playback_acdb_id, "ACDB device id for the in-call injection port");
++
++/*
++ * The call is mono, and so is the pseudo port the DSP reads the injected
++ * stream from: the factory stack opens its COPP with one channel and a centre
++ * channel map, while we were opening it in stereo because that is what the
++ * backend defaults to. 0 keeps whatever the backend says.
++ */
++static uint playback_channels = 1;
++module_param(playback_channels, uint, 0644);
++MODULE_PARM_DESC(playback_channels,
++		 "channels for the in-call injection COPP (0 = as the backend)");
++
+ /**
+  * q6routing_stream_open() - Register a new stream for route setup
+  *
+@@ -369,6 +414,7 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	struct route_payload payload;
+ 	struct q6copp *copp;
+ 	int copp_idx;
++	int app_type, acdb_id;
+ 	struct session_data *session, *pdata;
+ 
+ 	if (!routing_data) {
+@@ -392,13 +438,35 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	session->sample_rate = pdata->sample_rate;
+ 	session->channels = pdata->channels;
+ 	session->bits_per_sample = pdata->bits_per_sample;
++	session->perf_mode = perf_mode;
+ 
+ 	payload.num_copps = 0; /* only RX needs to use payload */
+ 	topology = NULL_COPP_TOPOLOGY;
++	app_type = 0;
++	acdb_id = 0;
++	/*
++	 * The factory stack picks the COPP topology out of ACDB using the
++	 * front-end's app_type/acdb_id, and was seen opening the in-call
++	 * injection session with app_type 69937 (the record one gets 69936).
++	 * There is no ACDB here, so the three values are module parameters to
++	 * be swept by hand against the reference device.
++	 */
++	if (session->port_id == VOICE_PLAYBACK_TX) {
++		if (playback_copp_topology)
++			topology = playback_copp_topology;
++		if (playback_channels)
++			session->channels = playback_channels;
++		app_type = playback_app_type;
++		acdb_id = playback_acdb_id;
++		dev_info(routing_data->dev,
++			 "injection copp: topology %#x ch %d app_type %u acdb %u\n",
++			 topology, session->channels, app_type, acdb_id);
++	}
++
+ 	copp = q6adm_open(routing_data->dev, session->port_id,
+ 			      session->path_type, session->sample_rate,
+ 			      session->channels, topology, perf_mode,
+-			      session->bits_per_sample, 0, 0);
++			      session->bits_per_sample, app_type, acdb_id);
+ 
+ 	if (IS_ERR_OR_NULL(copp)) {
+ 		mutex_unlock(&routing_data->lock);
+@@ -418,6 +486,9 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
+ 	if (num_copps) {
+ 		payload.num_copps = num_copps;
+ 		payload.session_id = stream_id;
++		dev_info(routing_data->dev,
++			 "stream open: fe %d session %d -> port %#x (%d copp)\n",
++			 fedai_id, stream_id, session->port_id, num_copps);
+ 		q6adm_matrix_map(routing_data->dev, session->path_type,
+ 				 payload, perf_mode);
+ 	}
+@@ -457,6 +528,9 @@ void q6routing_stream_close(int fedai_id, int stream_type)
+ 	if (!session)
+ 		return;
+ 
++	dev_info(routing_data->dev, "stream close: fe %d (port %#x)\n",
++		 fedai_id, session->port_id);
++
+ 	for_each_set_bit(idx, &session->copp_map, MAX_COPPS_PER_PORT) {
+ 		if (session->copps[idx]) {
+ 			q6adm_close(routing_data->dev, session->copps[idx]);
+@@ -469,6 +543,59 @@ void q6routing_stream_close(int fedai_id, int stream_type)
+ }
+ EXPORT_SYMBOL_GPL(q6routing_stream_close);
+ 
++/*
++ * Re-send the ADM matrix for a session that is already streaming.
++ *
++ * The vendor stack rebuilds the matrix (msm_pcm_routing_build_matrix) every
++ * time the routes of a running front-end change; mainline only ever mapped it
++ * when the stream was opened. Touching a route mid-stream therefore left the
++ * DSP with the mapping it had before - which is exactly what happens when the
++ * in-call record tap is switched on while the injection stream is running.
++ */
++static void q6routing_build_matrix(struct msm_routing_data *data, int idx)
++{
++	struct session_data *session = &data->sessions[idx];
++	struct route_payload payload;
++	int num_copps = 0;
++	int j;
++
++	if (!session->copp_map || session->port_id < 0)
++		return;
++
++	memset(&payload, 0, sizeof(payload));
++	for_each_set_bit(j, &session->copp_map, MAX_COPPS_PER_PORT) {
++		payload.port_id[num_copps] = session->port_id;
++		payload.copp_idx[num_copps] = j;
++		num_copps++;
++	}
++
++	if (!num_copps)
++		return;
++
++	payload.num_copps = num_copps;
++	payload.session_id = idx + 1;
++
++	dev_info(data->dev, "rebuild matrix: session %d -> port %#x (%d copp)\n",
++		 idx + 1, session->port_id, num_copps);
++	q6adm_matrix_map(data->dev, session->path_type, payload,
++			 session->perf_mode);
++	dev_info(data->dev, "rebuild matrix: session %d done\n", idx + 1);
++}
++
++/*
++ * Only the front-end whose route just changed, which is what the vendor does.
++ *
++ * Re-mapping every running session instead was tried and hangs: the ADM never
++ * answers a matrix map for a session that is already mapped while a call is
++ * up, and the control write blocks inside the kcontrol handler forever.
++ */
++static void q6routing_rebuild_matrix(struct msm_routing_data *data, int idx)
++{
++	mutex_lock(&data->lock);
++	q6routing_build_matrix(data, idx);
++	mutex_unlock(&data->lock);
++}
++
+ static int msm_routing_get_audio_mixer(struct snd_kcontrol *kcontrol,
+ 				       struct snd_ctl_elem_value *ucontrol)
+ {
+@@ -505,14 +632,36 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
+ 		if (session->port_id == be_id)
+ 			return 0;
+ 
++		/*
++		 * Routing one of the voice pseudo ports is what asks the voice
++		 * stream for its copy of the call, or offers it something to
++		 * mix in. The vendor stack triggers it from here too, and does
++		 * it *before* wiring the front-end into the backend - so the
++		 * DSP is already expecting the stream by the time the graph
++		 * carries it.
++		 */
++		if (be_id == VOICE_RECORD_RX || be_id == VOICE_RECORD_TX)
++			q6voice_incall_record_route(be_id == VOICE_RECORD_TX,
++						    true);
++		else if (be_id == VOICE_PLAYBACK_TX)
++			q6voice_incall_playback_route(true);
++
+ 		session->port_id = be_id;
+ 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, update);
++		q6routing_rebuild_matrix(data, session_id);
+ 	} else {
+ 		if (session->port_id == -1 || session->port_id != be_id)
+ 			return 0;
+ 
++		if (be_id == VOICE_RECORD_RX || be_id == VOICE_RECORD_TX)
++			q6voice_incall_record_route(be_id == VOICE_RECORD_TX,
++						    false);
++		else if (be_id == VOICE_PLAYBACK_TX)
++			q6voice_incall_playback_route(false);
++
+ 		session->port_id = -1;
+ 		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, update);
++		q6routing_rebuild_matrix(data, session_id);
+ 	}
+ 
+ 	return 1;
+@@ -566,6 +715,19 @@ static const struct snd_kcontrol_new slimbus_5_rx_mixer_controls[] = {
+ static const struct snd_kcontrol_new slimbus_6_rx_mixer_controls[] = {
+ 	Q6ROUTING_RX_MIXERS(SLIMBUS_6_RX) };
+ 
++/* Bluetooth SCO: this is where a call to a headset goes out and comes back. */
++static const struct snd_kcontrol_new slimbus_7_rx_mixer_controls[] = {
++	Q6ROUTING_RX_MIXERS(SLIMBUS_7_RX) };
++
++/*
++ * In-call injection: whatever a front-end plays here is mixed into what the
++ * far end hears. It is the return path of the record taps - together they let
++ * the CPU sit in the middle of a call (a Bluetooth headset, say) without the
++ * voice ever leaving the DSP for the modem.
++ */
++static const struct snd_kcontrol_new voice_playback_tx_mixer_controls[] = {
++	Q6ROUTING_RX_MIXERS(VOICE_PLAYBACK_TX) };
++
+ static const struct snd_kcontrol_new pri_tdm_rx_0_mixer_controls[] = {
+ 	Q6ROUTING_RX_MIXERS(PRIMARY_TDM_RX_0) };
+ 
+@@ -772,6 +934,12 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
+ 	SND_SOC_DAPM_MIXER("SLIMBUS_6_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+ 			   slimbus_6_rx_mixer_controls,
+ 			   ARRAY_SIZE(slimbus_6_rx_mixer_controls)),
++	SND_SOC_DAPM_MIXER("SLIMBUS_7_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
++			   slimbus_7_rx_mixer_controls,
++			   ARRAY_SIZE(slimbus_7_rx_mixer_controls)),
++	SND_SOC_DAPM_MIXER("VOICE_PLAYBACK_TX Audio Mixer", SND_SOC_NOPM, 0, 0,
++			   voice_playback_tx_mixer_controls,
++			   ARRAY_SIZE(voice_playback_tx_mixer_controls)),
+ 	SND_SOC_DAPM_MIXER("PRI_MI2S_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+ 			   primary_mi2s_rx_mixer_controls,
+ 			   ARRAY_SIZE(primary_mi2s_rx_mixer_controls)),
+@@ -977,6 +1145,8 @@ static const struct snd_soc_dapm_route intercon[] = {
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_4_RX Audio Mixer", "SLIMBUS_4_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_5_RX Audio Mixer", "SLIMBUS_5_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_6_RX Audio Mixer", "SLIMBUS_6_RX"),
++	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_7_RX Audio Mixer", "SLIMBUS_7_RX"),
++	Q6ROUTING_RX_DAPM_ROUTE("VOICE_PLAYBACK_TX Audio Mixer", "VOICE_PLAYBACK_TX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("QUAT_MI2S_RX Audio Mixer", "QUAT_MI2S_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("QUIN_MI2S_RX Audio Mixer", "QUIN_MI2S_RX"),
+ 	Q6ROUTING_RX_DAPM_ROUTE("SEN_MI2S_RX Audio Mixer", "SEN_MI2S_RX"),
+-- 
+2.47.3
+

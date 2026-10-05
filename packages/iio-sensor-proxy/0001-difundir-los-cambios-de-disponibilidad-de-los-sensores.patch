@@ -1,0 +1,88 @@
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Mon, 21 Sep 2026 13:30:00 +0200
+Subject: [PATCH] difundir los cambios de disponibilidad de los sensores
+
+send_dbus_event_for_client() solo avisa de un cambio a los clientes que ya
+han reclamado un sensor. Un cliente que pregunta HasAccelerometer antes de
+que el sensor exista obtiene FALSE, no lo reclama y no se entera nunca de
+que ha aparecido. Es lo que le pasa a phosh con los sensores del
+concentrador del ADSP (SSC): tardan ~86 s en estar listos tras el arranque
+y phosh pregunta a los ~26 s, asi que se queda sin rotacion automatica toda
+la sesion (Nothing Phone 1, pmOS edge).
+
+Ahora send_dbus_event() difunde ademas a todo el bus los cambios de Has*.
+Solo la disponibilidad: las lecturas siguen yendo a quien las reclama.
+---
+--- a/src/iio-sensor-proxy.c	2026-09-21 13:17:15.929883796 +0200
++++ b/src/iio-sensor-proxy.c	2026-09-21 13:17:15.989883203 +0200
+@@ -336,6 +336,61 @@
+ 				       props_changed, NULL);
+ }
+ 
++/* Difunde a TODO el bus los cambios de disponibilidad de los sensores (Has*).
++ *
++ * send_dbus_event_for_client() solo avisa a los clientes que ya han reclamado un
++ * sensor. Un cliente que pregunto HasAccelerometer antes de que el sensor
++ * existiera, obtuvo FALSE y por eso no lo reclamo -- phosh en el arranque -- no
++ * se entera nunca de que ha aparecido: se queda sin rotacion automatica toda la
++ * sesion. Con sensores IIO normales no pasa porque existen desde el arranque; con
++ * los del concentrador del ADSP (SSC) si: tardan ~86 s en estar listos y phosh
++ * pregunta a los ~26 s. Solo se difunde la disponibilidad, no las lecturas. */
++static void
++broadcast_has_properties (SensorData     *data,
++			  PropertiesMask  mask)
++{
++	GVariantBuilder props_builder;
++	gboolean compass = (mask & PROP_ALL) == 0;
++	gboolean any = FALSE;
++
++	g_variant_builder_init (&props_builder, G_VARIANT_TYPE ("a{sv}"));
++	if (mask & PROP_HAS_ACCELEROMETER) {
++		g_variant_builder_add (&props_builder, "{sv}", "HasAccelerometer",
++				       g_variant_new_boolean (driver_type_exists (data, DRIVER_TYPE_ACCEL)));
++		any = TRUE;
++	}
++	if (mask & PROP_HAS_AMBIENT_LIGHT) {
++		g_variant_builder_add (&props_builder, "{sv}", "HasAmbientLight",
++				       g_variant_new_boolean (driver_type_exists (data, DRIVER_TYPE_LIGHT)));
++		any = TRUE;
++	}
++	if (mask & PROP_HAS_PROXIMITY) {
++		g_variant_builder_add (&props_builder, "{sv}", "HasProximity",
++				       g_variant_new_boolean (driver_type_exists (data, DRIVER_TYPE_PROXIMITY)));
++		any = TRUE;
++	}
++	if (mask & PROP_HAS_COMPASS) {
++		g_variant_builder_add (&props_builder, "{sv}", "HasCompass",
++				       g_variant_new_boolean (driver_type_exists (data, DRIVER_TYPE_COMPASS)));
++		any = TRUE;
++	}
++	if (!any) {
++		g_variant_builder_clear (&props_builder);
++		return;
++	}
++
++	g_dbus_connection_emit_signal (data->connection,
++				       NULL,
++				       compass ? SENSOR_PROXY_COMPASS_DBUS_PATH : SENSOR_PROXY_DBUS_PATH,
++				       "org.freedesktop.DBus.Properties",
++				       "PropertiesChanged",
++				       g_variant_new ("(s@a{sv}@as)",
++						      compass ? SENSOR_PROXY_COMPASS_IFACE_NAME : SENSOR_PROXY_IFACE_NAME,
++						      g_variant_builder_end (&props_builder),
++						      g_variant_new_strv (NULL, 0)),
++				       NULL);
++}
++
+ static void
+ send_dbus_event (SensorData     *data,
+ 		 PropertiesMask  mask)
+@@ -349,6 +404,8 @@
+ 	g_assert (data->connection);
+ 	g_assert ((mask & PROP_ALL) == 0 || (mask & PROP_ALL_COMPASS) == 0);
+ 
++	broadcast_has_properties (data, mask);
++
+ 	/* Make a list of the events each client for each sensor
+ 	 * is interested in */
+ 	ht = g_hash_table_new (g_str_hash, g_str_equal);

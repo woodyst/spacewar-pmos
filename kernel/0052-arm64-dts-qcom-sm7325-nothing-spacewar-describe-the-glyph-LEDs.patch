@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Mon, 5 Oct 2026 19:38:00 +0200
+Subject: [PATCH] arm64: dts: qcom: sm7325-nothing-spacewar: describe the glyph
+ LEDs
+
+The white "glyph" LEDs on the back of the Nothing Phone (1) are the 18
+channels of an Awinic AW21018 on i2c1 at address 0x20, enabled through
+gpio18, as in the vendor device tree.  Describe the controller and its
+single white indicator LED.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ .../boot/dts/qcom/sm7325-nothing-spacewar.dts | 25 ++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+index 36678a3a3..9707d2401 100644
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1101,7 +1101,22 @@ &i2c1 {
+ 	clock-frequency = <100000>;
+ 	status = "okay";
+ 
+-	/* awinic,aw21018 (Glyph LED) @ 20 */
++	glyph_led: led-controller@20 {
++		compatible = "awinic,aw21018";
++		reg = <0x20>;
++		enable-gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
++		pinctrl-names = "default";
++		pinctrl-0 = <&glyph_led_default>;
++
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		led@0 {
++			reg = <0>;
++			function = LED_FUNCTION_INDICATOR;
++			color = <LED_COLOR_ID_WHITE>;
++		};
++	};
+ 
+ 	typec-mux@42 {
+ 		compatible = "fcs,fsa4480";
+@@ -1797,6 +1812,14 @@ &tlmm {
+ 	/* 56-59: Fingerprint reader (SPI) */
+ 	gpio-reserved-ranges = <56 4>;
+ 
++	glyph_led_default: glyph-led-default-state {
++		pins = "gpio18";
++		function = "gpio";
++		drive-strength = <2>;
++		bias-pull-up;
++		output-high;
++	};
++
+ 	bt_uart_sleep_cts: bt-uart-sleep-cts-state {
+ 		pins = "gpio28";
+ 		function = "gpio";

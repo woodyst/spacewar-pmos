@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?Eduardo=20Garc=C3=ADa-M=C3=A1dico=20Portabella?=
+ <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 18:03:26 +0200
+Subject: [PATCH] firmware: qcom: scm: register the Gunyah watchdog on the
+ Nothing Phone (1)
+
+The firmware reports SMCCC v1.0, so arm_smccc_hypervisor_has_uuid() never
+makes the vendor hypervisor UID call and the Gunyah watchdog device is not
+registered, although the APSS watchdog is reserved for Gunyah and nothing
+else can serve as a hardware watchdog. Register it on this machine anyway;
+gunyah_wdt probes the watchdog status call and returns -ENODEV if the
+hypervisor does not answer it.
+---
+ drivers/firmware/qcom/qcom_scm.c | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/firmware/qcom/qcom_scm.c b/drivers/firmware/qcom/qcom_scm.c
+index 4702ad898..1a0afa3cd 100644
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -2494,9 +2494,17 @@ static void qcom_scm_gunyah_wdt_init(struct qcom_scm *scm)
+ 		"arm,sbsa-gwdt",
+ 	};
+ 
+-	/* Bail out if we are not running under Gunyah */
+-	if (!IS_ENABLED(CONFIG_HAVE_ARM_SMCCC_DISCOVERY) ||
+-	    !arm_smccc_hypervisor_has_uuid(&gunyah_uuid))
++	/*
++	 * Bail out if we are not running under Gunyah. Some boards run Gunyah
++	 * behind firmware that only reports SMCCC v1.0, so the hypervisor UID
++	 * call is never made and the check fails although the watchdog is
++	 * there (Nothing Phone (1): the APSS watchdog is reserved for Gunyah).
++	 * On those, register the device anyway: the driver probes the Gunyah
++	 * watchdog status call itself and backs off if it is not answered.
++	 */
++	if ((!IS_ENABLED(CONFIG_HAVE_ARM_SMCCC_DISCOVERY) ||
++	     !arm_smccc_hypervisor_has_uuid(&gunyah_uuid)) &&
++	    !of_machine_is_compatible("nothing,spacewar"))
+ 		return;
+ 
+ 	/*
+-- 
+2.47.3
+

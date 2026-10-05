@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eduardo Garcia-Madico Portabella <woodyst@gmail.com>
+Date: Sun, 13 Sep 2026 21:48:36 +0200
+Subject: [PATCH 34/37] ASoC: qdsp6: q6voice: do not rebuild the whole session
+ on a device switch by default
+
+switch_full_session was turned on to bring a call back to a Bluetooth
+headset with audio. The silent return turned out to be the SLIMBus manager
+keeping the stream's channels, fixed by removing them when the stream is
+disabled (qcom-ngd-ctrl remove_channels), and rebuilding MVM, CVS and the
+vocproc coincided with an ADSP crash when moving a call to the speaker.
+
+On the Nothing Phone (1), with channel removal on, a vocproc-only move takes
+a call from the headset to the earpiece and back with audio both ways
+(measured 2026-09-13). A boot service was writing N; make it the default.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+---
+ sound/soc/qcom/qdsp6/q6voice.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+index e2a3d8f45..e9377f34e 100644
+--- a/sound/soc/qcom/qdsp6/q6voice.c
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -77,8 +77,15 @@ static void q6voice_apply_rx_volume(struct device *dev, struct q6voice_session *
+  * from scratch. With this set, a move tears the three sessions down and builds
+  * them again against the new ports. Writable, so that both ways can be
+  * compared between calls: /sys/module/q6voice/parameters/switch_full_session
++ *
++ * Off by default. The silent return turned out to be the bus manager keeping
++ * the stream's channels (see remove_channels in qcom-ngd-ctrl), not the
++ * session, and rebuilding the whole session coincided with an ADSP crash when
++ * moving a call to the speaker. On the Nothing Phone (1), with channel removal
++ * on, a vocproc-only move brings a call back to the headset with audio both
++ * ways (measured 2026-09-13).
+  */
+-static bool switch_full_session = true;
++static bool switch_full_session;
+ module_param(switch_full_session, bool, 0644);
+ MODULE_PARM_DESC(switch_full_session,
+ 		 "rebuild MVM, CVS and vocproc (not only the vocproc) when a call changes device");
+-- 
+2.47.3
+

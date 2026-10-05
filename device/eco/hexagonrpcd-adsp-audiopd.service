@@ -1,0 +1,22 @@
+# Servidor fastrpc del dominio de audio del ADSP (audio_process / audiopd), como el «adsprpcd audiopd» de
+# Android. El PD de audio carga por aquí sus módulos dinámicos (la canceladora de eco, fluence…) y su heap
+# remoto; sin él, las topologías de voz del fabricante que los usan no confirman. Copiado de surya.
+#
+# Necesita: hexagonrpcd 0.4.0.100-r13 (-a audiopd, ftell/flen, heap remoto y su liberación) y el kernel con
+# el heap del canal fastrpc del ADSP (kodiak.dtsi) y la devolución del heap a HLOS antes de liberarlo (r113).
+# ⚠️ No pararlo con una llamada en curso: libera el PD estático.
+# 2026-09-15: sin Conflicts=/Before=suspend.target (antes se paraba en cada suspensión y lo relanzaba
+# hexagonrpcd-reanudar.service): tras ~70 ciclos fastrpc daba «No space left on device» y colgó el móvil.
+[Unit]
+Description=Server for FastRPC remote procedure calls from Qualcomm ADSP - AudioPD
+Requires=dev-fastrpc\x2dadsp.device
+After=dev-fastrpc\x2dadsp.device hexagonrpcd-adsp-rootpd.service
+
+[Service]
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -a audiopd -R /usr/share/qcom/sm7325/Nothing/spacewar
+Restart=no
+User=fastrpc
+Group=fastrpc
+
+[Install]
+WantedBy=multi-user.target
