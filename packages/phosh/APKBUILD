@@ -1,6 +1,9 @@
-# ⚠️ COPIA NUESTRA de la receta de pmaports (extra-repos/systemd/phosh), con UN parche propio:
+# ⚠️ COPIA NUESTRA de la receta de pmaports (extra-repos/systemd/phosh), con DOS parches propios:
 # 0001-complemento-de-ajustes-rapidos-por-mandato.patch añade el complemento genérico «mandato», cuatro
 # ranuras de ajustes rápidos que ejecutan mandatos configurables (ver docs/BOTONES-AJUSTES-RAPIDOS.md).
+# 0002-despertar-automatico-no-enciende-la-pantalla.patch: un despertar AUTOMÁTICO del móvil (avisos del
+# módem, la batería) no enciende la pantalla; solo lo hace si lo provocó un botón o el táctil.
+# Ver docs/wakeups-and-battery.es.md.
 # ⚠️ appstream-dev lo añadimos NOSOTROS a makedepends: meson.build:129 lo exige sin condiciones y la receta de
 # pmaports no lo lista (en su entorno le llega por otra vía). Sin él la compilación muere en 15 s.
 # pkgrel=100 por convención del proyecto: así una actualización de pmaports/Alpine NO nos sustituye en silencio.
@@ -15,7 +18,7 @@ maintainer="Stefan Hansson <newbyte@postmarketos.org>"
 pkgname=phosh
 _pkgver=0.57.0
 pkgver=9999$_pkgver
-pkgrel=100
+pkgrel=102
 pkgdesc="Wayland shell for GNOME on mobile devices"
 # armhf: blocked by gnome-shell-schemas
 arch="all !armhf"
@@ -88,6 +91,7 @@ subpackages="
 source="https://sources.phosh.mobi/releases/phosh/phosh-${_pkgver/_/.}.tar.xz
 	splash-timeout-flatpak-dbus.patch
 	0001-complemento-de-ajustes-rapidos-por-mandato.patch
+	0002-despertar-automatico-no-enciende-la-pantalla.patch
 	"
 builddir="$srcdir/$pkgname-${_pkgver/_/.}"
 somask="libphoshsearch.so"
@@ -140,4 +144,5 @@ sha512sums="
 51219a3295b061047765368a0f65a02b131c4b229ec03713f547595b73a98c51b99086769bf0584dd7d44b8426b21d50162e76e955fb7a37a5136cefa253fea8  phosh-0.57.0.tar.xz
 cb4bad612e5d2dff156c6b97b460c16ab7fd48067935b616fe0b65d11c3d255f1ecd06b800c654ac9ea93bc53e823eb47134836dfdf61bb338588dab78d3b9e9  splash-timeout-flatpak-dbus.patch
 2377606ea31c3ee2a4bf766fed0c51cbf248b1fa03f08a11c4b8ec2fe78dcc5668161d83588e67f0b08b0ed1a145a4ca45308df6a9d97c076b5ef271175ec313  0001-complemento-de-ajustes-rapidos-por-mandato.patch
+44535411310f4228a600e9c16551a5ac35a3014feb70bac8ddd250c526ec34eef7814fab966e98c722ffc5b26631d752ba23986bc21e853dcfb4de31dda7bde1  0002-despertar-automatico-no-enciende-la-pantalla.patch
 "

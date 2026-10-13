@@ -174,6 +174,45 @@ post)
 		rm -f "$CARGA"
 	fi
 	irq=$(cat /sys/power/pm_wakeup_irq 2>/dev/null)
+	# PANTALLA AL REANUDAR (2026-10-13): constancia del estado del panel AQUÍ, a los ~60 ms de
+	# «System returned from sleep», antes de que la sesión gráfica haga suya la pantalla. Con
+	# esto se distingue si la enciende el kernel al reanudar o el espacio de usuario después
+	# (phosh/gsd-power por la señal PrepareForSleep de logind). Medido con rtcwake: el kernel
+	# NO la enciende.
+	panel=""
+	for b in /sys/class/backlight/*; do
+		panel="$panel $(cat "$b/bl_power" 2>/dev/null)"
+	done
+	logger -t despertar -p user.info "(${2:-?}) panel al reanudar (bl_power):${panel:-?}"
+	# ORIGEN DEL DESPERTAR (2026-10-13): se deja escrito para el parche 0002 de phosh
+	# (packages/phosh/0002-...): phosh ignora la petición de encender la pantalla mientras este
+	# fichero diga «automatico» y sea reciente (ventana de 10 s). «usuario» si lo provocó un botón
+	# (116 encendido, 117 resin, 165 volumen) o el táctil (170 fts_ts), o si sus interrupciones
+	# subieron al reanudar. Sin este fichero, phosh se comporta como upstream.
+	origen="automatico"
+	case "${irq:-}" in
+		116|117|165|170) origen="usuario" ;;
+	esac
+	if [ -r "$ANTES" ] && suma | awk -F '\t' 'NR == FNR { a[$2] = $1; next }
+		($2 ~ /fts_ts|pmic_pwrkey|pmic_resin|Volume/) && $1 > a[$2] { found = 1 }
+		END { exit found ? 0 : 1 }' "$ANTES"; then
+		origen="usuario"
+	fi
+	echo "$origen" > /run/despertar-origen 2>/dev/null
+	# phosh (usuario, no root) la «consume» cuando bloquea la primera petición de encender:
+	# necesita poder escribirla. Ver parche 0002 de phosh.
+	chmod 666 /run/despertar-origen 2>/dev/null
+	logger -t despertar -p user.info "(${2:-?}) origen del despertar: $origen"
+	# APAGAR EL PANEL AL INSTANTE (2026-10-13): si no lo despertó nadie, el panel se queda
+	# apagado sin esperar a la unidad diferida de 3 s. Con el parche de phosh la pantalla ni
+	# llega a encenderse; esto cubre el caso de que suspendiera con la pantalla encendida
+	# (el kernel reactiva el CRTC al reanudar).
+	if [ "$origen" = automatico ]; then
+		for b in /sys/class/backlight/*; do
+			echo 4 > "$b/bl_power" 2>/dev/null
+		done
+		logger -t despertar -p user.info "(${2:-?}) panel apagado al reanudar (bl_power=4)"
+	fi
 	if [ -r "$ANTES" ]; then
 		# ⚠️ logger ignora la entrada estándar si también recibe un mensaje: se monta el mensaje entero
 		lista=$(suma | awk -F '\t' 'NR == FNR { a[$2] = $1; next } ($2 in a) && $1 > a[$2] { print $1 - a[$2] "\t" $2 }' \

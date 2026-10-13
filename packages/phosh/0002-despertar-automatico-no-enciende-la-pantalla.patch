@@ -1,0 +1,96 @@
+diff -ruN original/phosh-v0.57.0/src/monitor-manager.c phosh-v0.57.0/src/monitor-manager.c
+--- a/src/monitor-manager.c
++++ b/src/monitor-manager.c
+@@ -24,6 +24,10 @@
+ #include "dbus/gsd-color-dbus.h"
+ 
+ #include <gdk/gdkwayland.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <time.h>
+ 
+ #define GSD_COLOR_BUS_NAME "org.gnome.SettingsDaemon.Color"
+ #define GSD_COLOR_OBJECT_PATH "/org/gnome/SettingsDaemon/Color"
+@@ -863,6 +867,67 @@
+ }
+ 
+ 
++/* ⚠️ spacewar (Nothing Phone 1, 2026-10-13): un despertar AUTOMÁTICO no debe encender la
++ * pantalla.
++ *
++ * El móvil se despierta solo a menudo (avisos del módem por GLINK/QRTR, la batería, el ADSP).
++ * Cada despertar automático hacía que gnome-settings-daemon pidiera PowerSaveMode 0 y el panel
++ * se iluminara: el usuario lo veía de noche y cada rato despierto cuesta ~150 mA.
++ *
++ * El kernel NO reenciende el panel al reanudar (comprobado el 2026-10-13 con `rtcwake -m mem`
++ * con la pantalla ya apagada: bl_power seguía en 4); quien lo enciende es el espacio de usuario
++ * reaccionando a PrepareForSleep de logind. Aquí se corta la petición sea cual sea el cliente.
++ *
++ * El gancho de systemd-sleep (root) escribe /run/despertar-origen al reanudar:
++ *   "usuario"    -> lo despertó un botón (IRQ 116/117/165) o el táctil (170)
++ *   "automatico" -> no lo provocó nadie
++ * Solo se ignora la petición durante los primeros segundos tras ese despertar: después, un toque
++ * o un botón encienden la pantalla como siempre. Sin el fichero (gancho no instalado) el
++ * comportamiento es el de upstream.
++ */
++static gboolean
++display_on_request_after_automatic_wake (void)
++{
++  static const char marker[] = "/run/despertar-origen";
++  const int window_seconds = 10;
++  struct stat st;
++  char contents[32];
++  FILE *f;
++  size_t n;
++
++  if (stat (marker, &st) != 0)
++    return FALSE;
++
++  /* marcador viejo: no es este despertar */
++  if ((long long) time (NULL) - (long long) st.st_mtime > window_seconds)
++    return FALSE;
++
++  f = fopen (marker, "r");
++  if (!f)
++    return FALSE;
++
++  n = fread (contents, 1, sizeof (contents) - 1, f);
++  fclose (f);
++  if (n == 0)
++    return FALSE;
++
++  contents[n] = '\0';
++  if (strncmp (contents, "automatico", 10) != 0)
++    return FALSE;
++
++  /* CONSUMIR la marca: solo se bloquea LA PRIMERA petición de encender tras el despertar
++   * automático (la que hace gnome-settings-daemon al reanudar). La siguiente —un toque o el
++   * botón— ya enciende la pantalla. Sin esto, cualquier pulsación dentro de la ventana se
++   * tragaba (visto el 2026-10-13 22:30: el usuario pulsaba el botón varias veces sin efecto). */
++  f = fopen (marker, "w");
++  if (f) {
++    fputs ("consumido", f);
++    fclose (f);
++  }
++  return TRUE;
++}
++
++
+ static void
+ power_save_mode_changed_cb (PhoshMonitorManager *self,
+                             GParamSpec          *pspec,
+@@ -884,6 +949,13 @@
+     break;
+   }
+ 
++  /* ⚠️ spacewar: ver display_on_request_after_automatic_wake() */
++  if (ps_mode == PHOSH_MONITOR_POWER_SAVE_MODE_ON &&
++      display_on_request_after_automatic_wake ()) {
++    g_debug ("spacewar: keeping the display off, this wake was automatic");
++    ps_mode = PHOSH_MONITOR_POWER_SAVE_MODE_OFF;
++  }
++
+   phosh_monitor_manager_set_power_save_mode (self, ps_mode);
+ }
+ 
