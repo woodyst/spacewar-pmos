@@ -58,3 +58,8 @@ Comprobado (phosh 99990.57.0-r102, muestreo de `bl_power` cada 50 ms):
 
 Para cazar cualquier encendido posterior: `pruebas/energia/vigia-pantalla.sh` (lee `bl_power` cada
 0,5 s y solo anota cambios; `journalctl -t vigia-pantalla`).
+
+Con el teléfono en uso normal y el SSH cerrado, el vigía registró 5 despertares en media hora: dos
+automáticos y tres del usuario. **Todos** los encendidos de pantalla llevaban `origen: usuario`;
+ninguno automático. El despertar automático de las 23:06 reanudó con `bl_power=4` y no hubo
+transición a 0.
