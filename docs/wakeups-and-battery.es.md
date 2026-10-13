@@ -24,3 +24,37 @@ plano, así que las medidas se hacen en primer plano y con el móvil despierto.
 ⚠️ **El micrófono abierto no deja dormir**: una ventana de «Ajustes» de GNOME con el medidor de
 sonido abierto mantenía dos flujos de captura y **abortaba la suspensión en el mismo segundo** (95
 intentos/h). `vigia-microfono` avisa cuando pasa.
+
+## La pantalla no debe encenderse en un despertar automático
+
+El móvil se despierta solo a menudo (el firmware lo saca de la suspensión; ver abajo por qué no se
+puede evitar desde Linux). Cada despertar automático **iluminaba la pantalla**, algo que se ve de
+noche y cuesta batería.
+
+**Quién la enciende, medido**: con `rtcwake -m mem -s 20` y la pantalla ya apagada, `bl_power`
+sigue en 4 al reanudar. `rtcwake` escribe `/sys/power/state` y se salta logind, así que ni
+`PrepareForSleep` ni los ganchos de `system-sleep` corren: **el kernel no reenciende el panel**. Lo
+enciende el espacio de usuario por la señal `PrepareForSleep(resume)` de logind. Emitir
+`org.gnome.ScreenSaver.WakeUpScreen` a mano no la enciende: phosh solo emite esa señal; lo que
+manda es la propiedad `org.gnome.Mutter.DisplayConfig PowerSaveMode`, implementada por phosh en
+`src/monitor-manager.c` (`power_save_mode_changed_cb` → `zwlr_output_power_v1_set_mode`).
+
+**El parche** (`packages/phosh/0002-despertar-automatico-no-enciende-la-pantalla.patch`): el gancho
+de systemd-sleep escribe `/run/despertar-origen` al reanudar — `usuario` si lo provocó un botón
+(IRQ 116/117/165) o el táctil (170), `automatico` si no—. phosh convierte la **primera** petición
+de encender la pantalla tras ese despertar en mantenerla apagada, y consume la marca: la siguiente
+petición (un toque o el botón) ya enciende. Sin el fichero, comportamiento de upstream.
+
+Detalle que costó un rato: con una simple ventana de 10 s el usuario pulsaba el botón varias veces
+sin que encendiera. Por eso la marca se **consume** en lugar de caducar.
+
+Comprobado (phosh 99990.57.0-r102, muestreo de `bl_power` cada 50 ms):
+
+| despertar | `bl_power` al reanudar | resultado |
+|---|---|---|
+| automático (alarma RTC, `pm_wakeup_irq=115`) | 4 | sigue apagada; `PowerSaveMode` llega a leer 0 pero el panel nunca se ilumina |
+| botón (`116`) | 4 → 0 | se enciende |
+| automático con la pantalla encendida al dormir | 0 → 4 | el kernel sí reactiva el CRTC; el gancho la apaga a los ~60 ms |
+
+Para cazar cualquier encendido posterior: `pruebas/energia/vigia-pantalla.sh` (lee `bl_power` cada
+0,5 s y solo anota cambios; `journalctl -t vigia-pantalla`).
