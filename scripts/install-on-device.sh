@@ -80,6 +80,7 @@ inst device/cuelgues/vigia-ipa.service                /etc/systemd/system/vigia-
 inst device/cuelgues/watchdog.conf                    /etc/systemd/system.conf.d/watchdog.conf            644
 inst device/energia/bateria-sin-despertar.service     /etc/systemd/system/bateria-sin-despertar.service   644
 inst device/energia/contadores-glink.service          /etc/systemd/system/contadores-glink.service        644
+inst device/energia/despertar-causa.service           /etc/systemd/system/despertar-causa.service         644
 inst device/energia/sleep-solo-deep.conf              /etc/systemd/sleep.conf.d/sleep-solo-deep.conf      644
 inst device/energia/spacewar-sensores.conf            /etc/tmpfiles.d/spacewar-sensores.conf              644
 inst device/energia/iio-sensor-proxy-esperar.conf     /etc/systemd/system/iio-sensor-proxy.service.d/esperar.conf 644
@@ -105,6 +106,7 @@ inst device/cuelgues/vigia-ipa.sh               /usr/local/sbin/vigia-ipa.sh    
 inst device/energia/esperar-sensores-adsp.sh    /usr/local/sbin/esperar-sensores-adsp.sh    755
 inst device/energia/volver-a-dormir.sh          /usr/local/sbin/volver-a-dormir.sh          755
 inst device/energia/contadores-glink            /usr/local/sbin/contadores-glink            755
+inst device/energia/despertar-causa.sh          /usr/local/sbin/despertar-causa.sh          755
 inst device/energia/consumo-reposo-muestra.sh   /usr/local/sbin/consumo-reposo-muestra.sh   755
 inst device/energia/info_carga.sh               /usr/local/bin/info_carga.sh                755
 inst device/energia/vigia-microfono.sh          /usr/local/bin/vigia-microfono.sh           755
@@ -129,7 +131,7 @@ say "enabling services"
 S 'set -e
   sudo systemctl daemon-reload
   sudo systemctl enable btmon-arranque brillo-persistente perro-vivo vigia-ipa \
-                       bateria-sin-despertar contadores-glink cancelacion-eco \
+                       bateria-sin-despertar contadores-glink despertar-causa cancelacion-eco \
                        hexagonrpcd-adsp-audiopd
   systemctl --user daemon-reload
   systemctl --user enable llamada-al-bluetooth hfp-registrado aviso-bt-caido \

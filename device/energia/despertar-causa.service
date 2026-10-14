@@ -1,0 +1,18 @@
+# /etc/systemd/system/despertar-causa.service — spacewar (2026-10-14)
+# Arma la sonda del kernel que identifica qué interrupción despierta al móvil
+# (/usr/local/sbin/despertar-causa.sh). Antes se armaba a mano con pruebas/energia/quien-despierta.sh
+# y un reboot la borraba: así sobrevive a cada arranque. La GRABACIÓN la arranca y la para el gancho
+# de systemd-sleep 50-despertar-y-sensores (con el móvil despierto, irq_handler_entry llena el búfer en
+# segundos). Lo instala scripts/99-ganchos-suspension.sh.
+[Unit]
+Description=Sonda del kernel: qué interrupción despierta al móvil
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/despertar-causa.sh armar
+ExecStop=/usr/local/sbin/despertar-causa.sh desarmar
+
+[Install]
+WantedBy=multi-user.target
