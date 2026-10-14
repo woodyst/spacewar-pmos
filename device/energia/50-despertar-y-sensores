@@ -47,12 +47,23 @@ suma() {
 }
 
 genpd() {
-	# Dominios de poder (genpd): «nombre<TAB>ms_activos<TAB>estado». Un dominio que acumula active_time
-	# DURMIENTE es un subsistema que no se apaga: ahí está el consumo que Android sí recorta.
-	# El contador es acumulativo desde el arranque; lo que importa es el delta entre «pre» y «post».
+	# Dominios de poder (genpd): «nombre<TAB>ms_activos<TAB>ms_idle<TAB>estado» (2026-10-14).
+	# Un dominio cuyo idle NO sube mientras el móvil duerme es un subsistema que sigue encendido;
+	# ahí está el consumo que Android sí recorta. Son contadores acumulados: importa el delta pre→post.
 	for g in /sys/kernel/debug/pm_genpd/*; do
 		[ -d "$g" ] || continue
-		printf '%s\t%s\t%s\n' "$(basename "$g")" "$(cat "$g/active_time" 2>/dev/null)" "$(cat "$g/current_state" 2>/dev/null)"
+		printf '%s\t%s\t%s\t%s\n' "$(basename "$g")" "$(cat "$g/active_time" 2>/dev/null)" \
+			"$(cat "$g/total_idle_time" 2>/dev/null)" "$(cat "$g/current_state" 2>/dev/null)"
+	done
+}
+
+pm_runtime() {
+	# «dispositivo=estado(activo/suspendido ms)» de los sospechosos: si no se suspenden nunca, están gastando.
+	for d in ae01000.display-controller ae94000.dsi 1d84000.ufshc a600000.usb 1e40000.ipa; do
+		p=/sys/bus/platform/devices/$d/power
+		[ -d "$p" ] || continue
+		printf '%s=%s(a%s/s%s) ' "$d" "$(cat "$p/runtime_status" 2>/dev/null)" \
+			"$(cat "$p/runtime_active_time" 2>/dev/null)" "$(cat "$p/runtime_suspended_time" 2>/dev/null)"
 	done
 }
 
@@ -193,9 +204,11 @@ post)
 	# Si un dominio suma ms de «activo» mientras el móvil duerme, ese subsistema no se apaga: ahí está la
 	# diferencia de consumo con Android. `journalctl -t despertar-genpd`.
 	if [ -r "$GENPD" ]; then
-		encendidos=$(genpd | awk -F '\t' 'NR == FNR { a[$1] = $2; next } ($1 in a) && $2 > a[$1] { print $2 - a[$1] "\t" $1 "\t" $3 }' \
-				"$GENPD" - | sort -rn | head -12 | awk -F '\t' '{ printf "%s +%s ms (%s)  ", $2, $1, $3 }')
-		logger -t despertar-genpd -p user.info "(${2:-?}) dominios de poder activos durante el sueño: ${encendidos:-ninguno: todos colapsaron}"
+		encendidos=$(genpd | awk -F '\t' 'NR == FNR { a[$1] = $2; i[$1] = $3; next }
+				($1 in a) { printf "%d\t%s\t%d\t%s\n", $2 - a[$1], $1, $3 - i[$1], $4 }' "$GENPD" - \
+			| sort -rn | head -12 | awk -F '\t' '{ printf "%s activo+%dms idle+%dms (%s)  ", $2, $1, $3, $4 }')
+		logger -t despertar-genpd -p user.info "(${2:-?}) dominios de poder: ${encendidos:-sin datos}"
+		logger -t despertar-genpd -p user.info "(${2:-?}) runtime PM: $(pm_runtime)"
 		rm -f "$GENPD"
 	fi
 	# Reactivar lo que la ablación paró (ver /run/despertar-experimento en «pre»).
