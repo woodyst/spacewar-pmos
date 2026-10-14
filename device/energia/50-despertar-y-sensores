@@ -150,6 +150,19 @@ post)
 	CAUSA=/sys/kernel/tracing/instances/despertar-causa
 	[ -d "$CAUSA" ] || CAUSA=/sys/kernel/debug/tracing/instances/despertar-causa
 	[ -w "$CAUSA/tracing_on" ] && echo 0 > "$CAUSA/tracing_on" 2>/dev/null
+	# VOLCAR LA TRAZA AL DIARIO (2026-10-14): si no, queda invisible salvo que alguien la lea a mano.
+	# `journalctl -t despertar-causa` muestra, de cada sueño, las PRIMERAS interrupciones atendidas al
+	# reanudar y si saltó algún kprobe (pmirq/pm_system_wakeup/wakeup_source_activate).
+	if [ -r "$CAUSA/trace" ]; then
+		n_ev=$(grep -c 'irq_handler_entry\|suspend_resume\|pmirq:\|pmwake:\|wakeup_source_activate' "$CAUSA/trace" 2>/dev/null)
+		primeras=$(awk '/syscore_resume\[0\] end/ { vista=1; t0=$3; sub(/:$/,"",t0); next }
+			vista && /irq_handler_entry/ { t=$3; sub(/:$/,"",t); n++
+				printf "%d:+%.3fms %s %s  ", n, (t-t0)*1000, $5, $6
+				if (n >= 8) exit }' "$CAUSA/trace" 2>/dev/null)
+		kp=$(grep -oE 'pmirq:.*|pmwake:.*|wakeup_source_activate:.*' "$CAUSA/trace" 2>/dev/null | tail -6 | tr '\n' ';')
+		logger -t despertar-causa -p user.info "(${2:-?}) eventos=$n_ev kprobes=${kp:-ninguno}"
+		logger -t despertar-causa -p user.info "(${2:-?}) ⭐ primeras IRQ atendidas al reanudar: ${primeras:-ninguna}"
+	fi
 	echo despertar-boton > /sys/power/wake_unlock 2>/dev/null
 	# Consumo medio DORMIDO según el propio medidor, leído al instante: time_to_empty_avg es una media del firmware y a
 	# los ~20 s despierto ya refleja otra vez el consumo despierto. charge_counter solo baja a saltos de ~8 mAh, no
