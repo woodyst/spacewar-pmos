@@ -27,6 +27,7 @@ FUENTES=/run/despertar-fuentes.antes
 GLINK=/run/despertar-glink.antes
 RED=/run/despertar-red.antes
 CARGA=/run/despertar-carga.antes
+GENPD=/run/despertar-genpd.antes
 CONTADORES=/usr/local/sbin/contadores-glink
 
 paquetes() {
@@ -41,6 +42,16 @@ suma() {
 	# «nombre total» por interrupción, sumando las CPU
 	awk 'NR > 1 { n = 0; for (i = 2; i <= NF; i++) { if ($i ~ /^[0-9]+$/) n += $i; else break }
 	              $1 = $1; sub(/^[^ ]+ /, ""); gsub(/^[0-9 ]+/, ""); print n "\t" $0 }' /proc/interrupts
+}
+
+genpd() {
+	# Dominios de poder (genpd): «nombre<TAB>ms_activos<TAB>estado». Un dominio que acumula active_time
+	# DURMIENTE es un subsistema que no se apaga: ahí está el consumo que Android sí recorta.
+	# El contador es acumulativo desde el arranque; lo que importa es el delta entre «pre» y «post».
+	for g in /sys/kernel/debug/pm_genpd/*; do
+		[ -d "$g" ] || continue
+		printf '%s\t%s\t%s\n' "$(basename "$g")" "$(cat "$g/active_time" 2>/dev/null)" "$(cat "$g/current_state" 2>/dev/null)"
+	done
 }
 
 boton() {
@@ -82,6 +93,7 @@ pre)
 	systemctl --no-block stop volver-a-dormir.timer pantalla-apagada.timer 2>/dev/null
 	suma > "$ANTES" 2>/dev/null
 	fuentes > "$FUENTES" 2>/dev/null
+	genpd > "$GENPD" 2>/dev/null
 	rm -f "$GLINK"
 	if [ -x $CONTADORES ]; then
 		v=$($CONTADORES leer)
@@ -162,6 +174,15 @@ post)
 		kp=$(grep -oE 'pmirq:.*|pmwake:.*|wakeup_source_activate:.*' "$CAUSA/trace" 2>/dev/null | tail -6 | tr '\n' ';')
 		logger -t despertar-causa -p user.info "(${2:-?}) eventos=$n_ev kprobes=${kp:-ninguno}"
 		logger -t despertar-causa -p user.info "(${2:-?}) ⭐ primeras IRQ atendidas al reanudar: ${primeras:-ninguna}"
+	fi
+	# DOMINIOS DE PODER QUE NO SE APAGARON DURANTE EL SUEÑO (2026-10-14): delta de active_time por genpd.
+	# Si un dominio suma ms de «activo» mientras el móvil duerme, ese subsistema no se apaga: ahí está la
+	# diferencia de consumo con Android. `journalctl -t despertar-genpd`.
+	if [ -r "$GENPD" ]; then
+		encendidos=$(genpd | awk -F '\t' 'NR == FNR { a[$1] = $2; next } ($1 in a) && $2 > a[$1] { print $2 - a[$1] "\t" $1 "\t" $3 }' \
+				"$GENPD" - | sort -rn | head -12 | awk -F '\t' '{ printf "%s +%s ms (%s)  ", $2, $1, $3 }')
+		logger -t despertar-genpd -p user.info "(${2:-?}) dominios de poder activos durante el sueño: ${encendidos:-ninguno: todos colapsaron}"
+		rm -f "$GENPD"
 	fi
 	echo despertar-boton > /sys/power/wake_unlock 2>/dev/null
 	# Consumo medio DORMIDO según el propio medidor, leído al instante: time_to_empty_avg es una media del firmware y a
