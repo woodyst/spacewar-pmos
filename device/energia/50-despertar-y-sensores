@@ -28,6 +28,8 @@ GLINK=/run/despertar-glink.antes
 RED=/run/despertar-red.antes
 CARGA=/run/despertar-carga.antes
 GENPD=/run/despertar-genpd.antes
+EXP=/run/despertar-experimento
+PARADOS=/run/despertar-experimento-parados
 CONTADORES=/usr/local/sbin/contadores-glink
 
 paquetes() {
@@ -94,6 +96,18 @@ pre)
 	suma > "$ANTES" 2>/dev/null
 	fuentes > "$FUENTES" 2>/dev/null
 	genpd > "$GENPD" 2>/dev/null
+	# ABLACIÓN (2026-10-14): si existe /run/despertar-experimento con unidades (una por línea), se paran
+	# antes de dormir y se reactivan al despertar. Sirve para medir qué subsistema impide el sueño
+	# profundo: sin el fichero, no se toca nada.
+	rm -f "$PARADOS"
+	if [ -r "$EXP" ]; then
+		for u in $(cat "$EXP"); do
+			if systemctl -q is-active "$u"; then
+				systemctl stop "$u" 2>/dev/null && echo "$u" >> "$PARADOS"
+			fi
+		done
+		logger -t despertar -p user.info "(${2:-?}) experimento de ablación: paradas $(cat "$PARADOS" 2>/dev/null | tr '\n' ' ')"
+	fi
 	rm -f "$GLINK"
 	if [ -x $CONTADORES ]; then
 		v=$($CONTADORES leer)
@@ -183,6 +197,14 @@ post)
 				"$GENPD" - | sort -rn | head -12 | awk -F '\t' '{ printf "%s +%s ms (%s)  ", $2, $1, $3 }')
 		logger -t despertar-genpd -p user.info "(${2:-?}) dominios de poder activos durante el sueño: ${encendidos:-ninguno: todos colapsaron}"
 		rm -f "$GENPD"
+	fi
+	# Reactivar lo que la ablación paró (ver /run/despertar-experimento en «pre»).
+	if [ -r "$PARADOS" ]; then
+		for u in $(cat "$PARADOS"); do
+			systemctl --no-block start "$u" 2>/dev/null
+		done
+		logger -t despertar -p user.info "(${2:-?}) experimento: reactivadas $(cat "$PARADOS" | tr '\n' ' ')"
+		rm -f "$PARADOS"
 	fi
 	echo despertar-boton > /sys/power/wake_unlock 2>/dev/null
 	# Consumo medio DORMIDO según el propio medidor, leído al instante: time_to_empty_avg es una media del firmware y a
