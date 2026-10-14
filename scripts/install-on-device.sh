@@ -59,6 +59,7 @@ say "udev (vibration motor, wakeup sources, pstore)"
 for f in device/vibracion/72-vibracion-spacewar.rules \
          device/energia/91-bt-uart-sin-despertar.rules \
          device/energia/92-bateria-sin-despertar.rules \
+         device/energia/93-usb-al-reposo.rules \
          device/cuelgues/99-pmsg-escribible.rules \
          device/cuelgues/99-ufs-sin-escalado.rules; do
   inst "$f" "/etc/udev/rules.d/$(basename "$f")" 644

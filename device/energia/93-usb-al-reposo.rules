@@ -1,0 +1,20 @@
+# /etc/udev/rules.d/93-usb-al-reposo.rules — spacewar (2026-10-14)
+#
+# Deja que el controlador USB3 (`a600000.usb`, dwc3) se suspenda cuando no hay nada enchufado.
+#
+# Por qué: viene con `power/control = on`, o sea el runtime PM DESACTIVADO. Medido el 14-10 con el móvil
+# despierto: `runtime_suspended_time = 0 ms` desde el arranque y el dominio `gcc_usb30_prim_gdsc`
+# encendido las 1.931 s de uptime (`idle = 0 ms`). Y no había nada que lo justificara: no existe la
+# interfaz `usb0` y `/sys/class/udc/a600000.usb/state = not attached`. Estaba gastando sin hacer nada.
+#
+# Con `auto`: medido en caliente, a los 8 s ya llevaba 1.972 ms suspendido.
+#
+# ⚠️ Si algún día se usa el gadget USB (red por cable o consola serie por USB), el runtime PM no lo rompe:
+# al adjuntar el gadget el controlador se reactiva solo. Aun así, si SSH por USB dejara de funcionar,
+# esta regla es la primera sospechosa. Revertir en caliente sin tocar el fichero:
+#     echo on > /sys/bus/platform/devices/a600000.usb/power/control
+#
+# Dos líneas (`add` y `bind`) por el mismo motivo que en la regla del UART del Bluetooth: en `add` el
+# atributo puede no existir todavía.
+ACTION=="add",  SUBSYSTEM=="platform", KERNEL=="a600000.usb", ATTR{power/control}="auto"
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="a600000.usb", ATTR{power/control}="auto"
