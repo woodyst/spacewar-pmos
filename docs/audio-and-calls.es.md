@@ -64,3 +64,29 @@ Nothing, que no se corren: se usa la de **manos libres en los dos modos**.
 - Diagnóstico de volumen y silencio: `scripts/diag-volumen-silencio.sh` (kprobes: ¿llega el cambio al
   DSP?). El volumen y el silencio en llamada **no se mueven con tonos puros** para medir el eco: la
   supresión de ruido del vocproc los trata como ruido; se usa voz grabada.
+
+## Cuidado: una actualización pisa el UCM
+
+Los ficheros del UCM viven en `/usr/share/alsa/ucm2/Nothing/spacewar/` y **son del paquete
+`alsa-ucm-conf-qcom-sc7280`**. apk protege lo que está en `/etc` (deja el nuevo como `.apk-new`), pero
+**`/usr/share` no**: una actualización sobrescribe sin avisar.
+
+Qué se pierde exactamente: la ruta **`Voice Call (Bluetooth)`** y las de CS-Voice. El síntoma es que
+las llamadas **dejan de ir al casco**, y en el diario del supervisor se ve:
+
+```
+supervisor: AVISO: el montaje 2 falla en: tarjeta del movil sin perfil Bluetooth
+supervisor: me rindo en esta llamada (tarjeta del movil sin perfil Bluetooth)
+```
+
+Pasó el 2026-11-04. Para que no vuelva a pasar hay una **autorreparación**:
+
+- `reparar-spacewar.service` corre al arrancar;
+- `reparar-spacewar.path` vigila `/usr/share/alsa/ucm2/Nothing/spacewar` y lo lanza si alguien lo toca;
+- el script compara contra las copias de `/usr/local/lib/spacewar/ref/`, reinstala lo que difiera,
+  lo anota (`journalctl -t reparar-spacewar`) y **recarga WirePlumber** (salvo que haya una llamada).
+
+Comprobado: romper `HiFi.conf` a propósito → repuesto en menos de 6 s y audio recargado.
+
+A mano: `sudo /usr/local/sbin/reparar-spacewar.sh`, y el chequeo completo del despliegue con
+`scripts/verificar-instalado.sh` (100 de 100 ficheros y las versiones de los paquetes).

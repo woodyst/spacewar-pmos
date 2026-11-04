@@ -1,0 +1,17 @@
+# /etc/systemd/system/reparar-spacewar.path — spacewar (2026-11-04)
+# Vigila el directorio del UCM que trae el paquete alsa-ucm-conf-qcom-sc7280: si una actualización lo
+# sobrescribe, se lanza reparar-spacewar.service y se reinstala nuestra versión (/usr/local/sbin/reparar-spacewar.sh).
+# Se vigila el DIRECTORIO y no los ficheros uno a uno para que baste una línea y para no perder de vista un
+# fichero que el paquete añada en el futuro. Lo instala scripts/62-reparacion.sh.
+#
+# ⚠️ Al reinstalar, el script escribe dentro del directorio vigilado: el .path vuelve a dispararse y, como ya
+# coincide, no hace nada. Converge en una segunda pasada.
+[Unit]
+Description=Vigila el UCM de spacewar que puede pisar una actualización
+
+[Path]
+PathModified=/usr/share/alsa/ucm2/Nothing/spacewar
+Unit=reparar-spacewar.service
+
+[Install]
+WantedBy=paths.target

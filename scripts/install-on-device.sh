@@ -36,6 +36,20 @@ inst device/ucm/Nothing/spacewar/NP1.conf       /usr/share/alsa/ucm2/Nothing/spa
 inst device/ucm/Nothing/spacewar/HiFi.conf      /usr/share/alsa/ucm2/Nothing/spacewar/HiFi.conf      644
 inst device/ucm/Nothing/spacewar/VoiceCall.conf /usr/share/alsa/ucm2/Nothing/spacewar/VoiceCall.conf 644
 
+# Copias de referencia para la autorreparación: el paquete alsa-ucm-conf-qcom-sc7280 escribe en /usr/share
+# (que apk NO protege) y en una actualización pisa estos ficheros; sin la ruta «Voice Call (Bluetooth)» las
+# llamadas dejan de ir al casco. reparar-spacewar.path + .service los reinstalan solos.
+say "reference copies for self-repair"
+S 'set -e
+  sudo mkdir -p /usr/local/lib/spacewar/ref
+  : | sudo tee /usr/local/lib/spacewar/reparables.tsv >/dev/null
+  for f in HiFi.conf NP1.conf VoiceCall.conf; do
+    sudo install -m644 "/usr/share/alsa/ucm2/Nothing/spacewar/$f" "/usr/local/lib/spacewar/ref/$f"
+    printf "%s\t%s\n" "/usr/local/lib/spacewar/ref/$f" "/usr/share/alsa/ucm2/Nothing/spacewar/$f" \
+      | sudo tee -a /usr/local/lib/spacewar/reparables.tsv >/dev/null
+  done
+  sudo /usr/local/sbin/reparar-spacewar.sh'
+
 say "wireplumber (audio routing, Bluetooth calls)"
 S 'mkdir -p ~/.config/wireplumber/wireplumber.conf.d \
            ~/.local/share/wireplumber/scripts/device \
@@ -81,6 +95,8 @@ inst device/cuelgues/vigia-ipa.service                /etc/systemd/system/vigia-
 inst device/cuelgues/watchdog.conf                    /etc/systemd/system.conf.d/watchdog.conf            644
 inst device/energia/bateria-sin-despertar.service     /etc/systemd/system/bateria-sin-despertar.service   644
 inst device/energia/contadores-glink.service          /etc/systemd/system/contadores-glink.service        644
+inst device/reparacion/reparar-spacewar.service       /etc/systemd/system/reparar-spacewar.service       644
+inst device/reparacion/reparar-spacewar.path          /etc/systemd/system/reparar-spacewar.path          644
 inst device/energia/despertar-causa.service           /etc/systemd/system/despertar-causa.service         644
 inst device/energia/sleep-solo-deep.conf              /etc/systemd/sleep.conf.d/sleep-solo-deep.conf      644
 inst device/energia/spacewar-sensores.conf            /etc/tmpfiles.d/spacewar-sensores.conf              644
@@ -108,6 +124,7 @@ inst device/energia/esperar-sensores-adsp.sh    /usr/local/sbin/esperar-sensores
 inst device/energia/volver-a-dormir.sh          /usr/local/sbin/volver-a-dormir.sh          755
 inst device/energia/contadores-glink            /usr/local/sbin/contadores-glink            755
 inst device/energia/despertar-causa.sh          /usr/local/sbin/despertar-causa.sh          755
+inst device/reparacion/reparar-spacewar.sh      /usr/local/sbin/reparar-spacewar.sh          755
 inst device/energia/consumo-reposo-muestra.sh   /usr/local/sbin/consumo-reposo-muestra.sh   755
 inst device/energia/info_carga.sh               /usr/local/bin/info_carga.sh                755
 inst device/energia/vigia-microfono.sh          /usr/local/bin/vigia-microfono.sh           755
@@ -133,6 +150,7 @@ S 'set -e
   sudo systemctl daemon-reload
   sudo systemctl enable btmon-arranque brillo-persistente perro-vivo vigia-ipa \
                        bateria-sin-despertar contadores-glink despertar-causa cancelacion-eco \
+                       reparar-spacewar.path reparar-spacewar.service \
                        hexagonrpcd-adsp-audiopd
   systemctl --user daemon-reload
   systemctl --user enable llamada-al-bluetooth hfp-registrado aviso-bt-caido \

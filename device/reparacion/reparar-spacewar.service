@@ -1,0 +1,14 @@
+# /etc/systemd/system/reparar-spacewar.service — spacewar (2026-11-04)
+# Reinstala los ficheros nuestros que un paquete haya pisado (/usr/local/sbin/reparar-spacewar.sh, que explica
+# el porqué). Lo arranca reparar-spacewar.path cuando alguien toca el directorio vigilado, y también al encender
+# el móvil por si el paquete se actualizó con el aparato apagado. Lo instala scripts/62-reparacion.sh.
+[Unit]
+Description=Reinstala los ficheros de spacewar que un paquete haya pisado
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reparar-spacewar.sh
+
+[Install]
+WantedBy=multi-user.target
