@@ -84,6 +84,11 @@ bus** en este arranque, se ejecuta `Sistema.calentar_sco()`, que hace la secuenc
 Después se deja todo como estaba. Cuesta ~1,5 s **una vez por arranque**; el resto de llamadas no
 pagan nada.
 
+✅ **CONFIRMADO en un arranque limpio (10-11-2026)**: la primera llamada tras reiniciar va al casco.
+Secuencia real del móvil: `casco conectado` → `el chip BT aun no esta en el SLIMbus; lo despierto con un SCO`
+→ `SCO de calentamiento: eSCO en pie en 1.3 s` → `chip en el bus tras el SCO de calentamiento (1.4 s)` →
+`enumerated at stream startup after 0 ms` + `bus channel 159 reserved`.
+
 ⚠️ **Ojo con el nombre de la fuente**: PipeWire llama a la tarjeta `bluez_card.B0_38_E2_23_71_AD`
 (guiones bajos) pero a la fuente `bluez_input.B0:38:E2:23:71:AD` (**dos puntos**). Con el nombre
 equivocado `parec` cae en la fuente por defecto (el micro del móvil), el SCO no se abre y el chip
