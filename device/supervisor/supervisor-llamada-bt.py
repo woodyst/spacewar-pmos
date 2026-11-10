@@ -39,6 +39,16 @@ QUE HACE
   reparar() saca la tarjeta y la vuelve a meter con el enlace ya en pie, una vez por
   montaje. No es el doble arranque de arriba: el canal 157 no ha arrancado ninguna vez.
 
+PRIMERA LLAMADA DE CADA ARRANQUE (spacewar, 2026-11-10)
+  El WCN6750 solo coge direccion en el SLIMbus despues de que se haya montado UNA vez
+  un SCO descargado desde que arranco. Medido: 36 «chip not enumerated» y 0 reservas
+  del canal 157 en 17 h desde el arranque, hasta el primer SCO real de una prueba; en
+  cuanto lo hubo, «enumerated at stream startup after 0 ms» y todas las llamadas
+  montaron en ~1 s. O sea: la primera llamada de cada arranque fallaba siempre y se
+  quedaba en el movil. Ahora, antes de montar y solo si el chip aun no esta en el bus,
+  se hace un SCO real de 1 s para despertarlo (engrasar_chip() / Sistema.calentar_sco).
+  Cuesta ~1,5 s UNA vez por arranque; el resto de llamadas no pagan nada.
+
 POR QUE ADQUIERE EL SCO EL MISMO
   Con `bluez5.hw-offload-sco = true` wireplumber no crea nodos SCO: crea un
   loopback pasivo (createOffloadScoNode en monitors/bluez.lua) y NADIE adquiere
@@ -87,9 +97,9 @@ HIFI_PREFERIDO = "HiFi (Headphones, Mic1, Speaker)"   # spacewar (surya: «HiFi 
 # ⚠️ SIEMPRE CVSD, nunca mSBC: bt_sco_rate esta fijo a 8000 y con mSBC el enlace
 # sube a 16 kHz con el DSP escribiendo a 8 -> eSCO en pie y silencio absoluto.
 P_CASCO_VOZ = "headset-head-unit-cvsd"
-# Sin negociacion de codec (p. ej. oFono haciendo de casco en the other phone) el perfil sale sin
+# Sin negociacion de codec (p. ej. oFono haciendo de casco en jt2) el perfil sale sin
 # sufijo, y tambien es CVSD. Los guiones viejos ya caian a el; el supervisor lo
-# perdio y con the other phone decia «casco sin manos libres» (2026-09-10). Nunca mSBC.
+# perdio y con jt2 decia «casco sin manos libres» (2026-09-10). Nunca mSBC.
 P_CASCO_VOZ_SIN_CODEC = "headset-head-unit"
 PERFILES_VOZ = (P_CASCO_VOZ, P_CASCO_VOZ_SIN_CODEC)
 
@@ -295,6 +305,51 @@ class Sistema:
         m = re.search(r"bluetoothOffloadActive.*?\n\s*Bool (true|false)", out)
         return None if m is None else m.group(1) == "true"
 
+    def chip_en_el_bus(self):
+        """¿Tiene ya el WCN6750 direccion en el SLIMbus en este arranque?
+
+        Se mira el diario del kernel: solo se escribe cuando el chip esta. Las dos
+        marcas («enumerated» y la reserva del canal 157) sobreviven a que el
+        controlador se suspenda, asi que basta con que hayan pasado UNA vez.
+        Sin diario se contesta que si: mejor no tocar nada que calentar a ciegas.
+        """
+        rc, out, _ = self._cmd(["journalctl", "-k", "-b", "-o", "cat", "--no-pager"], plazo=20)
+        if rc != 0:
+            return True
+        return ("enumerated at stream startup" in out
+                or "bus channel 157 reserved" in out)
+
+    def calentar_sco(self, casco, segundos=1):
+        """Primer SCO del arranque: hace que el WCN6750 se presente en el SLIMbus.
+
+        spacewar, 2026-11-10: el chip solo coge su direccion logica despues de que se
+        haya montado UNA vez un SCO descargado desde que arranco. Medido: 36 «chip not
+        enumerated» y 0 reservas del canal 157 durante 17 h, hasta el primer SCO real
+        de una prueba; despues, «enumerated at stream startup after 0 ms» y ya todas
+        las llamadas montan el circuito en ~1 s. Por eso la PRIMERA llamada de cada
+        arranque fallaba siempre.
+
+        Se abre el SCO de verdad (grabar del microfono del casco es lo que lo levanta:
+        con el offload pedido pero sin flujo, el chip no aparece) y se deja el casco
+        como estaba.
+        """
+        nombre = casco.get("nombre") or ""
+        if not nombre.startswith("bluez_card."):
+            return False
+        mac = nombre.split(".", 1)[1]
+        voz = perfil_voz(casco)
+        if voz is None:
+            return False
+        antes = casco.get("perfil") or ""
+        ok = self.poner_perfil(nombre, voz)
+        # timeout: parec no para solo; que lo mate el es el SCO que se busca
+        self._cmd(["timeout", str(segundos), "parec", "-d", "bluez_input." + mac,
+                   "--format=s16le", "--rate=8000", "--channels=1",
+                   "--latency-msec=20", "--raw"], plazo=segundos + 6)
+        if antes and antes != voz:
+            self.poner_perfil(nombre, antes)
+        return ok
+
     def mezclador_bt(self):
         _, out, _ = self._cmd(["amixer", "-c0", "cget", "name=SLIMBUS_7_RX Voice Mixer CS-Voice"])
         m = re.search(r": values=(on|off)", out)
@@ -409,7 +464,7 @@ class Sistema:
 #
 # Escribe en DOS sitios: el diario (detalle, con la etiqueta del supervisor) y
 # un fichero de actas legible. /var/log y /var/lib NO son escribibles por el
-# usuario del supervisor (the user), y /var/tmp lo limpia systemd-tmpfiles: por eso
+# usuario del supervisor (edi), y /var/tmp lo limpia systemd-tmpfiles: por eso
 # ~/.local/state, que es lo estandar para estado persistente de usuario.
 ACTAS = os.path.join(os.path.expanduser("~"), ".local", "state", "spacewar", "llamadas.log")
 ACTAS_MAX = 1024 * 1024        # al pasarse, se conserva la mitad mas reciente
@@ -671,6 +726,7 @@ class Supervisor:
         self.perfiles_vistos = None
         self.sesion_completa_puesta = None
         self.bt_antes = False
+        self.engrasado = False        # el SCO de calentamiento ya se hizo (una vez por proceso)
         # Sonda: acta de cada llamada (2026-09-17). Solo observa; nunca toca el audio.
         self.acta = Acta(sistema, reloj)
         self._reiniciar_llamada()
@@ -1048,8 +1104,34 @@ class Supervisor:
             return "has elegido el altavoz"
         return True
 
+    def engrasar_chip(self):
+        """Primer SCO del arranque, para que el WCN6750 se presente en el SLIMbus.
+
+        Solo la primera vez por proceso y solo si el chip aun no esta: el resto de
+        llamadas no pagan nada. Ver Sistema.calentar_sco para el porque.
+        """
+        if self.engrasado:
+            return
+        self.engrasado = True
+        if self.sis.chip_en_el_bus():
+            return
+        t = self.sis.tarjetas()
+        casco = t and t["casco"]
+        if not casco or casco["id"] is None:
+            return
+        log("primer SCO de este arranque: el chip BT aun no esta en el SLIMbus; lo despierto")
+        t0 = self.reloj()
+        self.sis.calentar_sco(casco)
+        for _ in range(10):
+            if self.sis.chip_en_el_bus():
+                log("   chip en el bus tras el SCO de calentamiento (%.1f s)" % (self.reloj() - t0))
+                return
+            self.dormir(0.2)
+        log("   AVISO: el chip sigue sin aparecer tras el SCO de calentamiento")
+
     def reparar(self, fallo, volvia=False):
         t0 = self.reloj()
+        self.engrasar_chip()
         while True:
             if self.reparaciones >= self.max_reparaciones:
                 self.rendirse(fallo)

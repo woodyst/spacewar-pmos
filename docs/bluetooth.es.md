@@ -49,3 +49,36 @@ eventos D-Bus** (ModemManager y PipeWire), sin sondeo:
   **después de reiniciar**.
 - El `hfp-registrado.sh` de surya **no reparaba nunca** aquí: usaba `ps -o etimes=` (busybox no lo
   tiene) y el veredicto era siempre «bien». Ahora saca la edad de `/proc/<pid>/stat`.
+
+## La primera llamada de cada arranque (arreglado el 2026-11-10)
+
+Síntoma: tras encender el móvil, **la primera llamada nunca va al casco**; se queda en el
+teléfono y el acta del supervisor dice `sin enlace SCO en pie` / `sin bajada por SLIMBus`.
+
+Causa: el chip WCN6750 **no existe en el bus SLIMbus** (el que lleva el audio de las llamadas)
+hasta que se ha montado **una vez** un SCO descargado desde que arrancó. Mientras no esté:
+
+```
+wcn-bt-slim 217:222:1:0: chip not enumerated
+ASoC error (-19)   ← ENODEV
+```
+
+Medido en un arranque completo: **36 `chip not enumerated` y 0 reservas del canal 157 en 17 h**,
+hasta el primer SCO real de una prueba. En cuanto lo hubo:
+
+```
+wcn-bt-slim 217:222:1:0: enumerated at stream startup after 0 ms: pgd laddr 0x86, ifd laddr 0x85
+wcn-bt-slim 217:222:1:0: bus channel 157 reserved for playback
+```
+
+…y a partir de ahí todas las llamadas montan el circuito en ~1 s.
+
+Arreglo (`supervisor-llamada-bt.py`): antes de montar, **solo si el chip aún no está en el
+bus** en este arranque, se hace un SCO real de 1 s para despertarlo
+(`Sistema.calentar_sco()` con un `parec` del micro del casco). Cuesta ~1,5 s **una vez por
+arranque**; el resto de llamadas no pagan nada. El estado se lee del diario del kernel
+(`enumerated at stream startup` o `bus channel 157 reserved`).
+
+⚠️ Ojo: pedir el camino del vendor (`hw-offload-datapath`) y tener el SCO montado **no basta** —
+se comprobó que con el SCO en pie y sin flujo de audio el chip sigue sin aparecer. Lo que lo
+levanta es el SCO **con datos**.

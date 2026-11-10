@@ -55,6 +55,7 @@ class Falso:
         self.param_0129 = True      # None = kernel sin el parche
         self.sin_sumidero = False
         self.chip_enumerado = True  # WCN6750: se enumera con el SCO en pie y luego sigue enumerado
+        self.calentar = True        # el supervisor puede calentar el chip con un SCO corto
         self.enumerable = True      # False: no aparece ni con el SCO
         self.reintentos_seg = None  # PipeWire reintenta el arranque del flujo durante N s tras entrar
         self.t_entrada_bt = None
@@ -119,6 +120,18 @@ class Falso:
 
     def offload_leido(self, dev):
         return self.sco
+
+    def chip_en_el_bus(self):
+        if not self.calentar:
+            return True                     # estas pruebas no quieren calentamiento
+        return self.chip_enumerado
+
+    def calentar_sco(self, casco, segundos=1):
+        """Un SCO real y corto: si el chip es enumerable, aparece (2026-11-10)."""
+        self.acciones.append(("calentar", casco["nombre"]))
+        if self.enumerable:
+            self.chip_enumerado = True
+        return True
 
     def mezclador_bt(self):
         return self.movil["perfil"] == S.P_MOVIL_BT
@@ -185,7 +198,7 @@ class Montaje(Base):
         self.assertEqual(len([x for x in self.nucleo.arranques_157 if x > 0]), 1)
 
     def test_casco_sin_negociacion_de_codec_usa_headset_head_unit(self):
-        # the other phone con oFono: el perfil CVSD sale sin sufijo
+        # jt2 con oFono: el perfil CVSD sale sin sufijo
         self.sis.casco["perfiles"] = {"a2dp-sink": True, S.P_CASCO_VOZ_SIN_CODEC: True}
         self.empezar()
         self.sup.revisar()
@@ -359,6 +372,62 @@ class Fallos(Base):
         self.sup.revisar()
         self.assertEqual(self.sis.acciones, [])
         self.assertEqual(self.avisos, [])
+
+
+class Calentamiento(Base):
+    """spacewar 2026-11-10: la primera llamada de cada arranque fallaba siempre.
+
+    El WCN6750 solo coge direccion en el SLIMbus despues de que se haya montado UNA
+    vez un SCO descargado desde que arranco. Medido: 36 «chip not enumerated» y 0
+    reservas del canal 157 en 17 h, hasta el primer SCO real; despues, enumerado en
+    0 ms. Lo paga la primera llamada y solo esa.
+    """
+
+    def test_primera_llamada_tras_arrancar_despierta_el_chip_antes_de_montar(self):
+        self.sis.chip_enumerado = False
+        self.empezar()                          # wireplumber mete la tarjeta: chip not enumerated
+        self.assertTrue(self.nucleo.flujo_casco_sin_arrancar())
+        self.reloj.t += 8
+        self.sup.revisar()
+        self.assertTrue(self.montado_de_verdad())
+        self.assertEqual(self.claves(), ["montado"])
+        tipos = [a[0] for a in self.sis.acciones]
+        self.assertIn("calentar", tipos)
+        self.assertLess(tipos.index("calentar"), tipos.index("offload"))
+        self.assertLess(tipos.index("calentar"), tipos.index("perfil"))
+        self.assertEqual(len([x for x in self.nucleo.arranques_157 if x > 0]), 1)
+
+    def test_la_segunda_llamada_no_calienta_otra_vez(self):
+        self.sis.chip_enumerado = False
+        self.empezar()
+        self.reloj.t += 8
+        self.sup.revisar()
+        self.assertTrue(self.montado_de_verdad())
+        self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), 1)
+        n = len([a for a in self.sis.acciones if a[0] == "calentar"])
+        self.llamadas = {}                      # cuelga
+        self.sup.revisar()
+        self.reloj.t += 30
+        self.empezar()                          # vuelve a llamar: el chip ya esta
+        self.sup.revisar()
+        self.assertTrue(self.montado_de_verdad())
+        self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), n)
+
+    def test_sin_casco_no_calienta(self):
+        self.sis.chip_enumerado = False
+        self.sis.hay_casco = False
+        self.empezar(tarjeta=S.P_MOVIL_AURICULAR)
+        self.sup.revisar()
+        self.assertEqual([a for a in self.sis.acciones if a[0] == "calentar"], [])
+
+    def test_si_el_chip_no_aparece_ni_calentando_se_rinde_como_antes(self):
+        self.sis.chip_enumerado = False
+        self.sis.enumerable = False
+        self.empezar()
+        self.reloj.t += 8
+        self.sup.revisar()
+        self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), 1)
+        self.assertIn("rendido", self.claves())
 
 
 class FlujoCasco(Base):
