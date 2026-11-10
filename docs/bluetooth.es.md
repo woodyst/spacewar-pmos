@@ -81,8 +81,13 @@ bus** en este arranque, se ejecuta `Sistema.calentar_sco()`, que hace la secuenc
 3. **tarjeta del móvil al perfil Bluetooth y abrir el CS-Voice** (`arecord -D hw:0,3`) → el
    kernel busca el chip al arrancar el `SLIMBUS_7`, y ahí lo encuentra.
 
-Después se deja todo como estaba. Cuesta ~3 s **una vez por arranque**; el resto de llamadas no
-pagan nada. El estado se lee del diario del kernel (`enumerated at stream startup` o
+Después se deja todo como estaba. Cuesta ~1,5 s **una vez por arranque**; el resto de llamadas no
+pagan nada.
+
+⚠️ **El momento importa**: se hace **al conectar el casco**, no en mitad de la llamada. Con la
+llamada en curso `q6voiced` tiene el CS-Voice abierto, el paso 3 no puede abrirlo y el chip no
+aparece (medido el 10-11 a las 12:46: el SCO subió en 0,8 s y el chip no enumeró). Al conectar el
+casco está libre: `eSCO en pie en 1.3 s` y `chip en el bus tras el SCO de calentamiento (1.4 s)`. El estado se lee del diario del kernel (`enumerated at stream startup` o
 `bus channel 157 reserved`).
 
 ⚠️ **Hacen falta las tres piezas**, comprobadas una a una: con perfil de voz + `parec` no sube ni

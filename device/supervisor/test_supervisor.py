@@ -426,8 +426,17 @@ class Calentamiento(Base):
         self.empezar()
         self.reloj.t += 8
         self.sup.revisar()
-        self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), 1)
+        # dos intentos como mucho: al conectar el casco y al empezar el montaje
+        self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), 2)
         self.assertIn("rendido", self.claves())
+
+    def test_con_casco_conectado_sin_llamada_calienta_una_vez(self):
+        """El mejor momento: sin llamada el CS-Voice esta libre (2026-11-10)."""
+        self.sis.chip_enumerado = False
+        self.reloj.t += 1
+        self.sup.revisar()                      # casco recien visto, sin llamada
+        self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), 1)
+        self.assertTrue(self.sis.chip_enumerado)
 
 
 class FlujoCasco(Base):

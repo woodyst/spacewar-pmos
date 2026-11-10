@@ -769,7 +769,7 @@ class Supervisor:
         self.perfiles_vistos = None
         self.sesion_completa_puesta = None
         self.bt_antes = False
-        self.engrasado = False        # el SCO de calentamiento ya se hizo (una vez por proceso)
+        self.calentamientos = 0       # SCOs de calentamiento hechos (dos como mucho por proceso)
         # Sonda: acta de cada llamada (2026-09-17). Solo observa; nunca toca el audio.
         self.acta = Acta(sistema, reloj)
         self._reiniciar_llamada()
@@ -884,6 +884,10 @@ class Supervisor:
                 log("casco %s" % ("conectado" if casco else "desconectado"))
             if casco:                 # conectarlo es una peticion de reintento
                 self.rendido, self.reparaciones = False, 0
+                # y el mejor momento para despertar el chip: sin llamada, el CS-Voice
+                # esta libre. Con la llamada en curso q6voiced lo tiene abierto y el
+                # calentamiento no puede abrirlo (medido 2026-11-10).
+                self.engrasar_chip()
             self.casco_antes = casco
 
         if not llamada:
@@ -1147,24 +1151,29 @@ class Supervisor:
             return "has elegido el altavoz"
         return True
 
-    def engrasar_chip(self):
+    def engrasar_chip(self, intentos_max=2):
         """Primer SCO del arranque, para que el WCN6750 se presente en el SLIMbus.
 
-        Solo la primera vez por proceso y solo si el chip aun no esta: el resto de
-        llamadas no pagan nada. Ver Sistema.calentar_sco para el porque.
+        Se intenta como mucho dos veces por proceso (al conectar el casco y, si aun no
+        esta, al empezar el montaje) y nunca si el chip ya esta. Ver
+        Sistema.calentar_sco para la secuencia y el porque.
         """
-        if self.engrasado:
+        if self.calentamientos >= intentos_max:
             return
-        self.engrasado = True
         if self.sis.chip_en_el_bus():
+            self.calentamientos = intentos_max      # ya esta: nada que hacer
             return
         t = self.sis.tarjetas()
         casco = t and t["casco"]
         if not casco or casco["id"] is None:
             return
-        log("primer SCO de este arranque: el chip BT aun no esta en el SLIMbus; lo despierto")
+        log("el chip BT aun no esta en el SLIMbus; lo despierto con un SCO")
         t0 = self.reloj()
-        self.sis.calentar_sco(casco)
+        self.calentamientos += 1
+        subido = self.sis.calentar_sco(casco)
+        if not subido:
+            log("   AVISO: el SCO de calentamiento no subio (CS-Voice ocupado?)")
+            return
         for _ in range(10):
             if self.sis.chip_en_el_bus():
                 log("   chip en el bus tras el SCO de calentamiento (%.1f s)" % (self.reloj() - t0))
