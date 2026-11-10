@@ -74,11 +74,17 @@ wcn-bt-slim 217:222:1:0: bus channel 157 reserved for playback
 …y a partir de ahí todas las llamadas montan el circuito en ~1 s.
 
 Arreglo (`supervisor-llamada-bt.py`): antes de montar, **solo si el chip aún no está en el
-bus** en este arranque, se hace un SCO real de 1 s para despertarlo
-(`Sistema.calentar_sco()` con un `parec` del micro del casco). Cuesta ~1,5 s **una vez por
-arranque**; el resto de llamadas no pagan nada. El estado se lee del diario del kernel
-(`enumerated at stream startup` o `bus channel 157 reserved`).
+bus** en este arranque, se ejecuta `Sistema.calentar_sco()`, que hace la secuencia completa:
 
-⚠️ Ojo: pedir el camino del vendor (`hw-offload-datapath`) y tener el SCO montado **no basta** —
-se comprobó que con el SCO en pie y sin flujo de audio el chip sigue sin aparecer. Lo que lo
-levanta es el SCO **con datos**.
+1. casco al perfil de voz **y** `bluetoothOffloadActive=true` → sube el eSCO;
+2. grabar del micro del casco → el SCO lleva datos;
+3. **tarjeta del móvil al perfil Bluetooth y abrir el CS-Voice** (`arecord -D hw:0,3`) → el
+   kernel busca el chip al arrancar el `SLIMBUS_7`, y ahí lo encuentra.
+
+Después se deja todo como estaba. Cuesta ~3 s **una vez por arranque**; el resto de llamadas no
+pagan nada. El estado se lee del diario del kernel (`enumerated at stream startup` o
+`bus channel 157 reserved`).
+
+⚠️ **Hacen falta las tres piezas**, comprobadas una a una: con perfil de voz + `parec` no sube ni
+el eSCO; con offload + `parec` sube el eSCO pero el chip sigue sin aparecer; cambiando solo el
+perfil de la tarjeta tampoco, porque sin abrir el PCM el kernel no arranca el `SLIMBUS_7`.
