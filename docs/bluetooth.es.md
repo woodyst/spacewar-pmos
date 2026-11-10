@@ -84,6 +84,11 @@ bus** en este arranque, se ejecuta `Sistema.calentar_sco()`, que hace la secuenc
 Después se deja todo como estaba. Cuesta ~1,5 s **una vez por arranque**; el resto de llamadas no
 pagan nada.
 
+⚠️ **Ojo con el nombre de la fuente**: PipeWire llama a la tarjeta `bluez_card.B0_38_E2_23_71_AD`
+(guiones bajos) pero a la fuente `bluez_input.B0:38:E2:23:71:AD` (**dos puntos**). Con el nombre
+equivocado `parec` cae en la fuente por defecto (el micro del móvil), el SCO no se abre y el chip
+nunca aparece.
+
 ⚠️ **El momento importa**: se hace **al conectar el casco**, no en mitad de la llamada. Con la
 llamada en curso `q6voiced` tiene el CS-Voice abierto, el paso 3 no puede abrirlo y el chip no
 aparece (medido el 10-11 a las 12:46: el SCO subió en 0,8 s y el chip no enumeró). Al conectar el

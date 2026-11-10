@@ -319,13 +319,29 @@ class Sistema:
         return ("enumerated at stream startup" in out
                 or "bus channel 157 reserved" in out)
 
+    def fuente_casco(self, mac):
+        """Nombre REAL de la fuente SCO del casco.
+
+        ⚠️ PipeWire la llama `bluez_input.B0:38:E2:23:71:AD` (con DOS PUNTOS) mientras la
+        tarjeta es `bluez_card.B0_38_E2_23_71_AD` (con guiones bajos). Con el nombre
+        equivocado `parec` cae en la fuente por defecto (el micro del movil): no abre el
+        SCO y no hay forma de que el chip aparezca. Medido 2026-11-10.
+        """
+        rc, out, _ = self._cmd(["pactl", "list", "short", "sources"])
+        for linea in out.splitlines():
+            campos = linea.split("\t") if "\t" in linea else linea.split()
+            for c in campos:
+                if c.startswith("bluez_input.") and c.replace(":", "_") == "bluez_input." + mac:
+                    return c
+        return None
+
     def pcm_voz(self):
         """«hw:0,3» del PCM CS-Voice, que es donde q6voiced abre la voz."""
         rc, out, _ = self._cmd(["aplay", "-l"])
         m = re.search(r"card (\d+): .*device (\d+): CS-Voice", out)
         return None if m is None else "hw:%s,%s" % (m.group(1), m.group(2))
 
-    def calentar_sco(self, casco, plazo=8):
+    def calentar_sco(self, casco, plazo=8, espera=3, intentos=3):
         """Primer SCO del arranque: hace que el WCN6750 se presente en el SLIMbus.
 
         spacewar, 2026-11-10: el chip no existe en el bus hasta que el KERNEL lo busca
@@ -338,6 +354,10 @@ class Sistema:
           2. grabar del micro del casco                            -> el SCO lleva datos
           3. tarjeta del movil al perfil Bluetooth + abrir CS-Voice -> el kernel busca el chip
         Despues se deja todo como estaba.
+
+        ⚠️ Se reintenta (3 veces, 3 s de espera la primera): al conectar el casco el
+        enlace A2DP aun se esta asentando y el eSCO puede no subir (medido 12:49: «NO
+        subio en 8.3 s», y el chip se quedo sin enumerar).
         """
         nombre = casco.get("nombre") or ""
         if not nombre.startswith("bluez_card."):
@@ -345,53 +365,67 @@ class Sistema:
         mac = nombre.split(".", 1)[1]
         voz = perfil_voz(casco)
         dev = self.pcm_voz()
-        if voz is None or dev is None:
-            log("AVISO: no puedo calentar el chip (perfil de voz=%s, CS-Voice=%s)" % (voz, dev))
+        fuente = self.fuente_casco(mac)
+        if voz is None or dev is None or fuente is None:
+            log("AVISO: no puedo calentar el chip (perfil de voz=%s, CS-Voice=%s, fuente=%s)"
+                % (voz, dev, fuente))
             return False
         t = self.tarjetas() or {}
         perfil_movil = (t.get("movil") or {}).get("perfil") or ""
         antes = casco.get("perfil") or ""
         id_casco = casco.get("id")
-
-        subido = False
         t0 = time.monotonic()
-        self.poner_perfil(nombre, voz)
-        if id_casco is not None:
-            self.offload(id_casco, True)
-        try:
-            p = subprocess.Popen(["parec", "-d", "bluez_input." + mac, "--format=s16le",
-                                  "--rate=8000", "--channels=1", "--latency-msec=20", "--raw"],
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as e:
-            log("AVISO: no puedo abrir el SCO de calentamiento: %s" % e)
-            return False
-        try:
-            while time.monotonic() - t0 < plazo:
-                if self.esco():
-                    subido = True
-                    break
-                time.sleep(0.25)
-            if subido:
-                self.poner_perfil(TARJETA_MOVIL, P_MOVIL_BT)
-                # /dev/null al final: sin fichero arecord escribe el audio en la
-                # salida estandar y _cmd() intenta leerlo como texto (UnicodeDecodeError).
-                self._cmd(["sudo", "-n", "arecord", "-D", dev, "-f", "S16_LE",
-                           "-r", "8000", "-c", "1", "-d", "2", "/dev/null"], plazo=10)
-        finally:
-            p.terminate()
-            try:
-                p.wait(timeout=3)
-            except Exception:
-                p.kill()
-            if perfil_movil:
-                self.poner_perfil(TARJETA_MOVIL, perfil_movil)
+        esperar = espera
+        for intento in range(1, intentos + 1):
+            if esperar:
+                time.sleep(esperar)
+                esperar = 2
+            subido = False
+            self.poner_perfil(nombre, voz)
             if id_casco is not None:
-                self.offload(id_casco, False)
-            if antes and antes != voz:
-                self.poner_perfil(nombre, antes)
-        log("   SCO de calentamiento: %s en %.1f s"
-            % ("eSCO en pie" if subido else "NO subio", time.monotonic() - t0))
-        return subido
+                self.offload(id_casco, True)
+            try:
+                p = subprocess.Popen(["parec", "-d", fuente,
+                                      "--format=s16le", "--rate=8000", "--channels=1",
+                                      "--latency-msec=20", "--raw"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as e:
+                log("AVISO: no puedo abrir el SCO de calentamiento: %s" % e)
+                return False
+            try:
+                t1 = time.monotonic()
+                while time.monotonic() - t1 < plazo:
+                    if self.esco():
+                        subido = True
+                        break
+                    time.sleep(0.25)
+                if subido:
+                    self.poner_perfil(TARJETA_MOVIL, P_MOVIL_BT)
+                    # /dev/null al final: sin fichero arecord escribe el audio en la
+                    # salida estandar y _cmd() intenta leerlo como texto.
+                    self._cmd(["sudo", "-n", "arecord", "-D", dev, "-f", "S16_LE",
+                               "-r", "8000", "-c", "1", "-d", "2", "/dev/null"], plazo=10)
+            finally:
+                p.terminate()
+                try:
+                    p.wait(timeout=3)
+                except Exception:
+                    p.kill()
+                if perfil_movil:
+                    self.poner_perfil(TARJETA_MOVIL, perfil_movil)
+                if id_casco is not None:
+                    self.offload(id_casco, False)
+            if subido:
+                if antes and antes != voz:
+                    self.poner_perfil(nombre, antes)
+                log("   SCO de calentamiento: eSCO en pie en %.1f s (intento %d)"
+                    % (time.monotonic() - t0, intento))
+                return True
+            log("   SCO de calentamiento: el eSCO no subio (intento %d/%d)" % (intento, intentos))
+        if antes and antes != voz:
+            self.poner_perfil(nombre, antes)
+        log("   SCO de calentamiento: NO subio en %.1f s" % (time.monotonic() - t0))
+        return False
 
     def mezclador_bt(self):
         _, out, _ = self._cmd(["amixer", "-c0", "cget", "name=SLIMBUS_7_RX Voice Mixer CS-Voice"])
