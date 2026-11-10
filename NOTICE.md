@@ -9,6 +9,7 @@
 | `packages/hexagonrpcd/*.patch` | **GPL-3.0-or-later** — matching hexagonrpc upstream |
 | `packages/modemmanager/*.patch`, `packages/networkmanager/*.patch` | **GPL-2.0-or-later** — matching upstream |
 | `packages/callaudiod/*.patch`, `packages/calls/*.patch` | **GPL-3.0-or-later** — matching upstream |
+| `packages/gnome-contacts/*.patch` | **GPL-2.0-or-later** — matching upstream |
 | `packages/phosh/*.patch`, `packages/stevia/*.patch` | **GPL-3.0-or-later / MIT**, as upstream |
 | `packages/*/APKBUILD` | **GPL-2.0-or-later**, as the postmarketOS/Alpine aports they extend |
 | `device/**`, `scripts/**` | Configuration and glue, same terms as the projects they configure |

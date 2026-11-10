@@ -1,0 +1,55 @@
+# Contributor: Rasmus Thomsen <oss@cogitri.dev>
+maintainer="team/gnome <achill@achill.org>"
+pkgname=gnome-contacts
+# spacewar (2026-10-15, odd/tasks/llamadas-contactos.md): la version del tarball es la del arbol
+# sobre el que se genero el parche (51.0). ANTES de compilar, comprobar la instalada en el telefono
+# (apk info -v gnome-contacts): si Alpine ya iba por 51.x con x>0, rehacer el parche sobre esa
+# version (git init + am, igual que con calls) y ajustar pkgver aqui. scripts/45-agenda.sh lo advierte.
+pkgver=51.0
+# r100 como en calls: que un `apk upgrade` con un r bajito de Alpine no pise el parche.
+pkgrel=100
+pkgdesc="A contacts manager for GNOME"
+url="https://apps.gnome.org/Contacts"
+arch="all"
+license="GPL-2.0-or-later"
+makedepends="
+	blueprint-compiler
+	desktop-file-utils
+	evolution-data-server-dev
+	folks-dev
+	glib-dev
+	gnome-desktop-dev
+	gnome-online-accounts-dev
+	gstreamer-dev
+	gtk4.0-dev
+	libadwaita-dev
+	libgee-dev
+	libglycin-gtk4-dev
+	libportal-dev
+	libqrencode-dev
+	meson
+	telepathy-glib-dev
+	vala
+	"
+checkdepends="appstream-glib"
+subpackages="$pkgname-lang $pkgname-doc"
+source="https://download.gnome.org/sources/gnome-contacts/${pkgver%%.*}/gnome-contacts-$pkgver.tar.xz
+	0001-contact-sheet-llamar-desde-ficha-y-estrella-favorito.patch
+	"
+
+build() {
+	abuild-meson -Db_lto=true . output
+	meson compile -C output
+}
+
+check() {
+	meson test --print-errorlogs -C output
+}
+
+package() {
+	DESTDIR="$pkgdir" meson install -C output
+}
+
+sha256sums="c8b60752f65a966e0a2c0cbf7c1e1607ee3b4a49318b50b19bdad2ab7fc6706d  gnome-contacts-51.0.tar.xz
+8d4ec4164fb71abd6eacbff84c815b2f11dcc31bf5923d77fd35b219f73e25da  0001-contact-sheet-llamar-desde-ficha-y-estrella-favorito.patch
+"

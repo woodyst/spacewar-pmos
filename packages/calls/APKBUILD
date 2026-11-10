@@ -5,7 +5,9 @@ pkgver=50.0
 # spacewar (2026-09-21): r100 y no r1 como en surya. Si Alpine recompila su calls-50.0 como r1..r99,
 # un `apk upgrade` pisaría nuestro parche sin avisar; con r100 no. Una versión nueva (50.1) sí lo
 # sustituye: scripts/43-calls.sh --ver lo detecta.
-pkgrel=100
+# 2026-10-15 (odd/tasks/llamadas-contactos.md): r101 suma los parches 0003 (búsqueda por índice),
+# 0004 (estrella de favorito) y 0005 (números bloqueados).
+pkgrel=101
 pkgdesc="Phone dialer and call handler"
 url="https://gitlab.gnome.org/GNOME/calls"
 arch="all"
@@ -43,6 +45,9 @@ subpackages="$pkgname-doc $pkgname-dbg $pkgname-lang $pkgname-systemd"
 source="https://download.gnome.org/sources/calls/${pkgver%%.*}/calls-$pkgver.tar.xz
 	0001-contacts-box-filtrar-a-plazos-para-no-congelar-el-buscador.patch
 	0002-contacts-box-no-filtrar-hasta-tres-caracteres.patch
+	0003-contacts-box-indice-de-busqueda-precalculado.patch
+	0004-contacts-row-estrella-de-favorito-compartida.patch
+	0005-bloqueados-tabla-pestana-rechazo-y-nota-eds.patch
 	"
 options="!check" # Requires running Wayland compositor
 
@@ -66,4 +71,7 @@ sha512sums="
 6360da21cfc33b4f101e3c8c2e137bbba706ed5c490cf38aa1a0e65363e85183593b5f54db5b8dabc10213326c1842ac2add376a3bec656ebdc3909f2d165e89  calls-50.0.tar.xz
 9ba1fc6f3021e145063c61fa459e8bb5c71babbe9e9b4d6fa4b256908e30a620c33c3937c9e542de7b420989d1f1af9c249579fedaf44dae45405d8a3be81711  0001-contacts-box-filtrar-a-plazos-para-no-congelar-el-buscador.patch
 0556b03de247d00f6a01738b292666d22bcf5c6f88fd3d79fcb164f3673174c406e473df472b8578295bed38c70b540cf14f92697eb10d0c31d0e54d367bb766  0002-contacts-box-no-filtrar-hasta-tres-caracteres.patch
+46070583057efdb8bc1cfc097bc1d1aaa2ee2ef729ceca0f790e202441869bc961f360ec97d32dd293c4574cc6bc20d32a86527acaacbef4486f60cb8c515cde  0003-contacts-box-indice-de-busqueda-precalculado.patch
+bc38fdf618eac5318654d7cab688640733c7c647bc653999e10a9d9acb1ab0b9b1b08ff6587d3d96a640812d547795184a9600595e446735f38411a457b3dcbb  0004-contacts-row-estrella-de-favorito-compartida.patch
+a8e95695432e3c4596bf02b079409b5232eed80ea804257c1846cfc2731147e2beab96ba9452099ecae9d0ed7832a3341217a8f479ef3ce3acbc85bfbe6ce572  0005-bloqueados-tabla-pestana-rechazo-y-nota-eds.patch
 "

@@ -156,8 +156,31 @@ files and scripts are published under the same terms as the projects they extend
 
 - [`docs/`](docs/) — per-subsystem notes: what was wrong, how it was found, and the traps.
 - [`kernel/`](kernel/) — the patch series, one commit per fix, plus the recipe and the config.
-- [`packages/`](packages/) — the patched packages (calls, callaudiod, libcamera, hexagonrpcd,
-  ModemManager, NetworkManager, phosh, stevia, flare, iio-sensor-proxy, mobile-broadband-provider-info).
+- [`packages/`](packages/) — the patched packages (calls, callaudiod, gnome-contacts, libcamera,
+  hexagonrpcd, ModemManager, NetworkManager, phosh, stevia, flare, iio-sensor-proxy,
+  mobile-broadband-provider-info).
+
+### Calls and Contacts quality-of-life patches
+
+`packages/calls` (50.0-r101) carries five patches; `packages/gnome-contacts` (51.0-r100) one:
+
+- contacts search no longer freezes the app: work is split into idle slices, filtering starts at
+  three characters, and — the root cause — each keystroke used to normalise every contact's phone
+  numbers through libphonenumber. Calls now matches against a pre-computed per-contact blob
+  (names, aliases, nicknames, raw and normalised numbers), so typing is a few `strstr` calls.
+- a star button on each contact row toggles the favourite flag — the very same EDS `starred`
+  property the GNOME Contacts list sorts by, so it is shared state between the two apps.
+- blocked numbers: a small `blocked.db` (number, E.164 form, label, reason, a reversible
+  `blocked` flag, date). An inbound blocked call is silenced and rejected — no missed-call
+  notification, but it stays in the history. A dedicated "Blocked" tab manages the list, and each
+  history row offers a quick block. If the number belongs to a contact, its notes (EDS, via
+  folks) gain a `Blocked in Calls (date): reason` line, rewritten on unblock.
+- in GNOME Contacts, each phone number in the contact sheet gains a **Call** button (a `tel:` URI
+  handled by Calls) and the sheet header a visible favourite star (previously only in the
+  hamburger menu).
+
+⚠️ `gnome-contacts` pins `pkgver=51.0`: regenerate the patch against the version you actually run
+(`git init && git am`) if that differs.
 - [`device/`](device/) — the device configuration, and [`device/README.md`](device/README.md) for
   what each file is and where it goes.
 - [Spanish version of this file](README.es.md).

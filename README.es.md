@@ -161,8 +161,30 @@ extienden. Ver [`NOTICE.md`](NOTICE.md).
 
 - [`docs/`](docs/) — notas por subsistema: qué fallaba, cómo se encontró y las trampas.
 - [`kernel/`](kernel/) — la serie de parches, un commit por arreglo, más la receta y la config.
-- [`packages/`](packages/) — los paquetes parcheados (calls, callaudiod, libcamera, hexagonrpcd,
-  ModemManager, NetworkManager, phosh, stevia, flare, iio-sensor-proxy, mobile-broadband-provider-info).
+- [`packages/`](packages/) — los paquetes parcheados (calls, callaudiod, gnome-contacts, libcamera,
+  hexagonrpcd, ModemManager, NetworkManager, phosh, stevia, flare, iio-sensor-proxy,
+  mobile-broadband-provider-info).
+
+### Parches de usabilidad en Llamadas y Contactos
+
+`packages/calls` (50.0-r101) lleva cinco parches; `packages/gnome-contacts` (51.0-r100), uno:
+
+- el buscador de contactos ya no congela la app: el trabajo se reparte en ratos ociosos, no filtra
+  hasta 3 caracteres y —causa raíz— cada tecla normalizaba los teléfonos de todos los contactos con
+  libphonenumber. Ahora Calls compara contra un blob precalculado por contacto (nombres, alias,
+  apodo, números crudo y normalizado): teclear son unas pocas `strstr`.
+- un botón estrella en cada fila de contacto alterna el favorito —la misma propiedad `starred` de
+  EDS por la que ordena la lista de GNOME Contacts, así que es estado compartido entre las dos apps.
+- números bloqueados: una tabla propia `blocked.db` (número, E.164, etiqueta, razón, un `blocked`
+  reversible y fecha). Una entrante bloqueada se silencia y se rechaza —sin aviso de pérdida, pero
+  queda en el historial—. Una pestaña «Bloqueados» gestiona la tabla y cada fila del historial ofrece
+  bloqueo rápido. Si el número es de un contacto, sus observaciones (EDS vía folks) ganan la línea
+  «Bloqueado en Llamadas (fecha): razón», que al desbloquear se reescribe.
+- en GNOME Contacts, cada teléfono de la ficha gana un botón **Llamar** (una URI `tel:` que atiende
+  Calls) y la cabecera de la ficha una estrella de favorito visible (antes solo en el menú).
+
+⚠️ `gnome-contacts` fija `pkgver=51.0`: si usas otra versión, rehaz el parche sobre la tuya
+(`git init && git am`).
 - [`device/`](device/) — la configuración del dispositivo, y [`device/README.md`](device/README.md)
   para saber qué es cada fichero y dónde va.
 - [Versión en inglés de este fichero](README.md).
