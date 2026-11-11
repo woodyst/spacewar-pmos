@@ -47,9 +47,12 @@ check() {
 }
 
 package() {
-	DESTDIR="$pkgdir" meson install -C output
+	# --no-rebuild: sin el, meson install reejecuta ninja y crossdirect no
+	# permite ejecutar el compilador en package() (mismo arreglo que en calls).
+	DESTDIR="$pkgdir" meson install --no-rebuild -C output
 }
 
-sha256sums="c8b60752f65a966e0a2c0cbf7c1e1607ee3b4a49318b50b19bdad2ab7fc6706d  gnome-contacts-51.0.tar.xz
-8d4ec4164fb71abd6eacbff84c815b2f11dcc31bf5923d77fd35b219f73e25da  0001-contact-sheet-llamar-desde-ficha-y-estrella-favorito.patch
+sha512sums="
+0919d28c9888e6dc5fe0e2900d225bed4e62304f38c83ab45663b94e360b798116a2bcd51d9b21e8e8a6910486e62d974d3515618becaf93ca26187bad14616a  gnome-contacts-51.0.tar.xz
+8ce7e461a5824583f607d665c4bf00497872a3de95897ff93da7ea4cc12486a086cd0ad7cef1d077b0ea2b8c13e5cd785532a5687f3d16afe09a5bdfea22a490  0001-contact-sheet-llamar-desde-ficha-y-estrella-favorito.patch
 "
