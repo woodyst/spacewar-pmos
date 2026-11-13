@@ -33,3 +33,33 @@ APN correcto y conexión automática, **leyendo el ICCID en el teléfono** (no s
   arrastrar los demás (el de IMS, que hace falta para las llamadas VoLTE).
 - La IP del enlace de USB es la de postmarketOS (`172.16.42.1`); el USB solo entra en modo
   dispositivo si el cable está puesto al arrancar.
+
+## Si el módem «desaparece»: ModemManager lo pierde y no lo busca (2026-11-13)
+
+Síntoma: `mmcli -L` dice **«No modems were found»**, sin llamadas ni datos, y en el diario de ModemManager
+**no hay ningún aviso**. No es una actualización: comprueba primero versiones y ficheros
+(`scripts/verificar-instalado.sh`) y el estado del DSP:
+
+```sh
+for r in /sys/devices/platform/soc@0/4080000.remoteproc/remoteproc/remoteproc*; do cat $r/state; done
+```
+
+Caso real (12-11 23:48-23:49): el móvil se iba a dormir con datos móviles; **se pulsó el botón durante la espera
+de 15 s** del gancho de sueño y la suspensión se canceló (`suspend_stats`: `fail 1`, `last_failed_errno -16`).
+ModemManager perdió el puerto QMI y no volvió a probarlo, con el remoteproc del módem todavía en `running` y su
+firmware cargado. `systemctl restart ModemManager` lo encontró a la primera.
+
+Desde entonces hay un **vigía** (`device/cuelgues/vigia-modem.{sh,service}`): cada 60 s comprueba que el
+remoteproc siga `running` y que `mmcli -L` lo vea; a la segunda comprobación seguida sin verlo reinicia
+ModemManager (nunca con una llamada en curso) y lo anota:
+
+```sh
+journalctl -t vigia-modem
+```
+
+A mano: `sudo vigia-modem.sh una` (una comprobación) o `sudo vigia-modem.sh` (bucle).
+
+⚠️ De paso se arregló un fallo del gancho de sueño: cuando la suspensión **se cancela**, systemd-sleep ejecuta
+igual la fase `post` y el gancho se creía despierto (escribía el «origen del despertar» y apagaba la pantalla sin
+que hubiera pasado nada). Ahora compara `suspend_stats/success` entre `pre` y `post` y, si no ha subido, anota
+`suspensión CANCELADA` y no toca nada.

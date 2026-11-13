@@ -1,0 +1,15 @@
+# /etc/systemd/system/vigia-modem.service — spacewar (2026-11-13)
+# Si ModemManager pierde el módem con el DSP del módem todavía en marcha, lo reinicia. El caso y el porqué
+# están en /usr/local/sbin/vigia-modem.sh. Lo instala scripts/85-cuelgues.sh.
+[Unit]
+Description=Vigía del módem: reinicia ModemManager si pierde el módem estando el DSP en marcha
+After=ModemManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/vigia-modem.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

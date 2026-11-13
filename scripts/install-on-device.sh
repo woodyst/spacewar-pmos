@@ -92,6 +92,7 @@ inst device/bluetooth/btmon-arranque.service          /etc/systemd/system/btmon-
 inst device/brillo/brillo-persistente.service         /etc/systemd/system/brillo-persistente.service      644
 inst device/cuelgues/perro-vivo.service               /etc/systemd/system/perro-vivo.service              644
 inst device/cuelgues/vigia-ipa.service                /etc/systemd/system/vigia-ipa.service               644
+inst device/cuelgues/vigia-modem.service                /etc/systemd/system/vigia-modem.service               644
 inst device/cuelgues/watchdog.conf                    /etc/systemd/system.conf.d/watchdog.conf            644
 inst device/energia/bateria-sin-despertar.service     /etc/systemd/system/bateria-sin-despertar.service   644
 inst device/energia/contadores-glink.service          /etc/systemd/system/contadores-glink.service        644
@@ -120,6 +121,7 @@ inst device/bluetooth/hfp-registrado.sh         /usr/local/bin/hfp-registrado.sh
 inst device/cuelgues/aviso-bt-caido.sh          /usr/local/bin/aviso-bt-caido.sh            755
 inst device/cuelgues/perro-vivo.sh              /usr/local/sbin/perro-vivo.sh               755
 inst device/cuelgues/vigia-ipa.sh               /usr/local/sbin/vigia-ipa.sh                755
+inst device/cuelgues/vigia-modem.sh               /usr/local/sbin/vigia-modem.sh                755
 inst device/energia/esperar-sensores-adsp.sh    /usr/local/sbin/esperar-sensores-adsp.sh    755
 inst device/energia/volver-a-dormir.sh          /usr/local/sbin/volver-a-dormir.sh          755
 inst device/energia/contadores-glink            /usr/local/sbin/contadores-glink            755
@@ -148,7 +150,7 @@ instu device/energia/vigia-microfono.timer               .config/systemd/user/vi
 say "enabling services"
 S 'set -e
   sudo systemctl daemon-reload
-  sudo systemctl enable btmon-arranque brillo-persistente perro-vivo vigia-ipa \
+  sudo systemctl enable btmon-arranque brillo-persistente perro-vivo vigia-ipa vigia-modem \
                        bateria-sin-despertar contadores-glink despertar-causa cancelacion-eco \
                        reparar-spacewar.path reparar-spacewar.service \
                        hexagonrpcd-adsp-audiopd
