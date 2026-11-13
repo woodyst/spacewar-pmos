@@ -62,4 +62,5 @@ A mano: `sudo vigia-modem.sh una` (una comprobación) o `sudo vigia-modem.sh` (b
 ⚠️ De paso se arregló un fallo del gancho de sueño: cuando la suspensión **se cancela**, systemd-sleep ejecuta
 igual la fase `post` y el gancho se creía despierto (escribía el «origen del despertar» y apagaba la pantalla sin
 que hubiera pasado nada). Ahora compara `suspend_stats/success` entre `pre` y `post` y, si no ha subido, anota
-`suspensión CANCELADA` y no toca nada.
+`suspensión CANCELADA` y no toca nada. En esa misma rama mira además si ModemManager se ha quedado sin el módem
+y, si es así, lo reinicia en el acto: es exactamente el caso que lo dejó sin módem el 12-11.

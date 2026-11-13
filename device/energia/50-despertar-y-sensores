@@ -210,6 +210,13 @@ post)
 			rm -f /run/despertar-sensores-parados
 		fi
 		rm -f "$ANTES" "$FUENTES" "$GLINK" "$RED" "$CARGA" "$GENPD" "$PARADOS"
+		# MODEM (2026-11-13): en el caso real del 12-11 23:49, después de cancelarse la suspensión
+		# ModemManager se quedó sin el módem (perdió el puerto QMI) y no lo volvió a buscar. Aquí se
+		# mira en el acto; el vigía (vigia-modem.service) cubre el resto de los casos.
+		if systemctl -q is-active ModemManager.service && ! mmcli -L 2>/dev/null | grep -q '/Modem/'; then
+			logger -t despertar -p user.warning "(${2:-?}) ModemManager se ha quedado sin el módem: lo reinicio"
+			systemctl restart ModemManager 2>/dev/null
+		fi
 		exit 0
 	fi
 	# VOLCAR LA TRAZA AL DIARIO (2026-10-14): si no, queda invisible salvo que alguien la lea a mano.
