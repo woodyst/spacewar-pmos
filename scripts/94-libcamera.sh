@@ -17,7 +17,7 @@
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 IA_SSH=${IA_SSH:-ia}
-BASE=/home/edi/postmarketos-spacewar
+BASE=${BASE:-$HOME/postmarketos-spacewar}
 MOVIL=${MOVIL:-phone}
 SSH_OPTS=${SSH_OPTS:-}
 PKG=libcamera
