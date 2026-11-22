@@ -831,6 +831,7 @@ class Supervisor:
         self.sesion_completa_puesta = None
         self.bt_antes = False
         self.calentamientos = 0       # SCOs de calentamiento hechos (dos como mucho por proceso)
+        self.calentar_hasta = 0.0     # ventana tras conectar el casco para reintentar el calentamiento
         # Sonda: acta de cada llamada (2026-09-17). Solo observa; nunca toca el audio.
         self.acta = Acta(sistema, reloj)
         self._reiniciar_llamada()
@@ -948,8 +949,12 @@ class Supervisor:
                 # y el mejor momento para despertar el chip: sin llamada, el CS-Voice
                 # esta libre. Con la llamada en curso q6voiced lo tiene abierto y el
                 # calentamiento no puede abrirlo (medido 2026-11-10).
-                self.engrasar_chip()
+                self.calentar_hasta = self.reloj() + 20   # el casco tarda en tener tarjeta y fuente
             self.casco_antes = casco
+
+        # Reintento del calentamiento durante esa ventana (sin bloquear el bucle).
+        if casco and self.reloj() <= self.calentar_hasta and not self.sis.chip_en_el_bus():
+            self.engrasar_chip()
 
         if not llamada:
             if self.en_llamada:
@@ -1216,12 +1221,18 @@ class Supervisor:
             return "has elegido el altavoz"
         return True
 
-    def engrasar_chip(self, intentos_max=2):
+    def engrasar_chip(self, intentos_max=2, esperar=0):
         """Primer SCO del arranque, para que el WCN6750 se presente en el SLIMbus.
 
         Se intenta como mucho dos veces por proceso (al conectar el casco y, si aun no
         esta, al empezar el montaje) y nunca si el chip ya esta. Ver
         Sistema.calentar_sco para la secuencia y el porque.
+
+        `esperar`: segundos a aguardar a que el casco recien conectado tenga tarjeta,
+        perfil de voz y fuente. ⚠️ 2026-11-22: al conectar, la tarjeta bluez aún no
+        estaba lista y el calentamiento se quedaba en «perfil de voz=None, fuente=None»;
+        luego llegaba la llamada con el chip fuera del bus, el primer montaje fallaba y
+        el calentamiento solo acertaba cuando ya no quedaba llamada (11 s de silencio).
         """
         if self.calentamientos >= intentos_max:
             return
@@ -1237,7 +1248,13 @@ class Supervisor:
         self.calentamientos += 1
         subido = self.sis.calentar_sco(casco)
         if not subido:
-            log("   AVISO: el SCO de calentamiento no subio (CS-Voice ocupado?)")
+            # ⚠️ 2026-11-22: al conectar el casco, la tarjeta bluez aún no tiene perfil de voz
+            # ni fuente («perfil de voz=None, fuente=None»). Eso NO es un intento gastado: se
+            # devuelve para reintentar en la vuelta siguiente. Antes se daba por hecho, la
+            # llamada llegaba con el chip fuera del bus y solo acertaba ya sin llamada: 11 s
+            # de silencio.
+            self.calentamientos -= 1
+            log("   AVISO: el SCO de calentamiento no subio (aun sin perfil o fuente; reintento)")
             return
         for _ in range(10):
             if self.sis.chip_en_el_bus():

@@ -56,6 +56,7 @@ class Falso:
         self.sin_sumidero = False
         self.chip_enumerado = True  # WCN6750: se enumera con el SCO en pie y luego sigue enumerado
         self.calentar = True        # el supervisor puede calentar el chip con un SCO corto
+        self.calentar_falla = 0     # nº de SCOs de calentamiento que no suben (casco aun sin perfil)
         self.enumerable = True      # False: no aparece ni con el SCO
         self.reintentos_seg = None  # PipeWire reintenta el arranque del flujo durante N s tras entrar
         self.t_entrada_bt = None
@@ -129,6 +130,9 @@ class Falso:
     def calentar_sco(self, casco, segundos=1):
         """Un SCO real y corto: si el chip es enumerable, aparece (2026-11-10)."""
         self.acciones.append(("calentar", casco["nombre"]))
+        if self.calentar_falla:          # p.ej. el casco aun no tiene perfil de voz ni fuente
+            self.calentar_falla -= 1
+            return False
         if self.enumerable:
             self.chip_enumerado = True
         return True
@@ -456,6 +460,22 @@ class Calentamiento(Base):
         self.reloj.t += 1
         self.sup.revisar()                      # casco recien visto, sin llamada
         self.assertEqual(len([a for a in self.sis.acciones if a[0] == "calentar"]), 1)
+        self.assertTrue(self.sis.chip_enumerado)
+
+
+class CalentamientoReintenta(Base):
+    """spacewar 2026-11-22 14:56: el casco conecta y el SCO de calentamiento no sube («perfil de
+    voz=None, fuente=None»), pero el intento NO se gastaba: la llamada llegaba con el chip fuera
+    del bus, fallaba el primer montaje y solo acertaba ya sin llamada (11 s de silencio)."""
+
+    def test_si_el_casco_aun_no_esta_listo_reintenta_en_la_vuelta_siguiente(self):
+        self.sis.chip_enumerado = False
+        self.sis.calentar_falla = 1              # el primer SCO no sube
+        self.reloj.t += 1
+        self.sup.revisar()                       # casco recien visto: intento fallido
+        self.assertFalse(self.sis.chip_enumerado)
+        self.reloj.t += 2
+        self.sup.revisar()                       # dentro de la ventana: reintenta y acierta
         self.assertTrue(self.sis.chip_enumerado)
 
 
