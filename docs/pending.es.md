@@ -85,6 +85,8 @@ Compilado e instalado `phosh-99990.59.0-r100`:
 - **0002** — la pantalla ya no se enciende en un despertar automático.
 - **0001** — vuelven los botones de **VPN** y **Waydroid** (complemento «mandato»).
 
+✅ Probado el 2026-11-22: los dos botones funcionan.
+
 Al portar cambió una cosa: la lista de complementos activos está ahora en `mobi.phosh.shell.plugins
 quick-settings` (antes `sm.puri.phosh.plugins`); el script de botones prueba las dos. Y dos piezas de la receta
 0.57 ya sobran en 0.59: `splash-timeout-flatpak-dbus.patch` (ese MR ya está upstream) y el `appstream-dev`
