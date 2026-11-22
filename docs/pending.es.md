@@ -78,9 +78,14 @@ restantes hay que portarlos a 99990.8.0 y recompilar (`scripts/94-libcamera.sh`)
 usa, dw9719)**, **0012 (udmabuf)** y **0013 (contexto EGL al parar)**. Sin ellos la cámara funciona **sin
 autoenfoque** y con menos rendimiento.
 
-## ✅ La voz en 7.2.9: enlaces colocados dentro del DSI
+## ✅ RESUELTO: la voz en 7.2.9
 
-Los parches `0019`/`0022` insertaban con el contexto `platform {`, que se repite en todos los enlaces, y `patch`
-metió los cinco enlaces de voz dentro del nodo del panel: la tarjeta quedaba con 7 enlaces y ASoC decía
-`no backend DAIs enabled for CS-Voice`. El `0060` los mueve dentro de `&sound` y ya se llega al chip
-(`chip not enumerated` es el comportamiento conocido: el WCN6750 enumera tras un SCO offloaded con datos).
+Dos fallos encadenados, los dos corregidos y probados con una llamada real (2026-11-22 15:00):
+
+1. **DTS**: los parches `0019`/`0022` insertaban con el contexto `platform {`, que se repite en todos los
+   enlaces, y `patch` metió los cinco enlaces de voz dentro del nodo del panel. La tarjeta quedaba con 7
+   enlaces y ASoC decía `no backend DAIs enabled for CS-Voice`. El `0060` los devuelve a `&sound`.
+2. **Supervisor**: al conectar el casco la tarjeta bluez aún no tiene perfil de voz ni fuente SCO, así que el
+   SCO de calentamiento no subía y el intento se daba por gastado; la llamada llegaba con el WCN6750 fuera del
+   SLIMbus y el calentamiento solo acertaba ya sin llamada (11 s de silencio). Ahora ese fallo no cuenta como
+   intento y se reintenta durante 20 s.
