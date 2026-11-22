@@ -122,3 +122,6 @@ del IPA (`src/ipa/softisp`), con estos tropiezos documentados en los parches:
 
 ⚠️ Con escena oscura la nitidez es 0 **y es correcto**: sin luz no hay contraste que medir.
 
+✅ Probado en la app el 2026-11-22: enfoca bien. Y el portal de cámara también funciona (hay que
+cerrar la app si se quedó colgada de un intento anterior).
+
