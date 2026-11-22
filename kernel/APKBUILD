@@ -96,6 +96,7 @@ source="
 	0050-crypto-qce-Add-runtime-PM-and-interconnect-bandwidth.patch
 	0051-leds-add-the-Awinic-AW21018-glyph-LED-driver.patch
 	0052-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-glyph-LEDs.patch
+	0060-arm64-dts-qcom-sm7325-nothing-spacewar-mover-los-enl.patch
 "
 builddir="$srcdir/$_repo-$pkgver-sc7280"
 
@@ -190,4 +191,5 @@ e7da1ff1cc0130d573598ae9bfc56ee25a289366a143e08e54046a604799bd9f5f92d2cad6c8a2d8
 1fb2cf5920ac415d7384d0808056b58680dad7d7e18a763ec3c44b3aec6c6f33a7b0bb9f387287763be3bf70a076e72eec62a9e2c8276e1c1b536b87ceeff535  0050-crypto-qce-Add-runtime-PM-and-interconnect-bandwidth.patch
 10bf13ab4c61c5c49c1e480adcc1fa43000756271ea1f7f6f82c44942478ed4200159fc5933f30632f0e388538ab4c08086218f0cbc5ac7d31036879626ff3b5  0051-leds-add-the-Awinic-AW21018-glyph-LED-driver.patch
 c5f9540d2c9ca08186283292880cf60ca39415f3c1e34ac8c99075f6c980d52825ac1be45c2d1a4cab0ecc23b2a09a6966b721006e50dc462a16af4e7b7cc73b  0052-arm64-dts-qcom-sm7325-nothing-spacewar-describe-the-glyph-LEDs.patch
+01f3e500d59b23b49c75bfbd72047dbe44090960c55fbbbc1a4dd6f86867dca5aa5cf079354e5e7d951c9797ec3eb31734a491b01e0196674d95eeecabed3353  0060-arm64-dts-qcom-sm7325-nothing-spacewar-mover-los-enl.patch
 "

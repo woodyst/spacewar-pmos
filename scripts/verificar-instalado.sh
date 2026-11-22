@@ -99,6 +99,12 @@ else echo "❌ /etc/bluetooth/main.conf sin «$L» (88-bluetooth-llamada.sh)"; e
 E=$(ssh $SSH_OPTS "$MOVIL" 'readlink /usr/share/alsa/ucm2/conf.d/sm8250/NP1.conf')
 if [ "$E" = "../../Nothing/spacewar/NP1.conf" ]; then echo "✅ enlace UCM conf.d/sm8250/NP1.conf -> $E"
 else echo "❌ enlace UCM conf.d/sm8250/NP1.conf -> «$E» (esperado ../../Nothing/spacewar/NP1.conf)"; emal=$((emal+1)); fi
+# ⚠️ 2026-11-22: los enlaces de voz acabaron colgando del nodo del panel (DSI) porque los parches 0019/0022
+# insertaban con el contexto «platform {», que no es único. La tarjeta se quedaba con 7 enlaces y ASoC decía
+# «no backend DAIs enabled for CS-Voice»: las llamadas no pasaban al casco aunque todo lo demás estuviera bien.
+F=$(ssh $SSH_OPTS "$MOVIL" 'ls /proc/device-tree/sound/ 2>/dev/null' | grep -c "slim7-.*-dai-link" || true)
+if [ "${F:-0}" -ge 2 ]; then echo "✅ enlaces SLIMBUS_7 dentro de /sound ($F)"
+else echo "❌ los enlaces SLIMBUS_7 no están bajo /sound (hay ${F:-0}): la voz no tendrá backend (kernel, parche 0060)"; emal=$((emal+1)); fi
 
 # ── 4. riesgo: ficheros nuestros que son de un paquete ───────────────────────────────────────────────────────────
 if grep -q '^DUENO ' "$T/movil"; then

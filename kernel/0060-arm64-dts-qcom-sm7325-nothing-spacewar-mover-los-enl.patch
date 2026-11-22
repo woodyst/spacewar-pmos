@@ -1,0 +1,177 @@
+--- a/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
++++ b/arch/arm64/boot/dts/qcom/sm7325-nothing-spacewar.dts
+@@ -1247,86 +1247,6 @@
+ 		};
+ 	};
+ 
+-	/*
+-	 * Bluetooth call audio: the DSP port SLIMBUS_7 on one end and the WCN6750 SCO ports on the
+-	 * other, as the stock firmware does. A CS voice call never crosses the CPU, so a headset can
+-	 * only get it this way. Backend links: they add no PCM and do not shift the numbering.
+-	 */
+-	/*
+-	 * The DSP copy of a phone call, as on surya: backends with no codec, whose far side is inside
+-	 * the DSP. VOC_REC_DL / VOC_REC_UL in q6routing record the downlink / uplink onto a front end,
+-	 * so a call can be checked or recorded although its audio never crosses the CPU.
+-	 */
+-	voice-rec-dl-dai-link {
+-		link-name = "Voice Downlink Capture";
+-		qcom,dpcm-backend;
+-
+-		cpu {
+-			sound-dai = <&q6afedai VOICE_RECORD_RX>;
+-		};
+-
+-		platform {
+-			sound-dai = <&q6routing>;
+-		};
+-	};
+-
+-	voice-rec-ul-dai-link {
+-		link-name = "Voice Uplink Capture";
+-		qcom,dpcm-backend;
+-
+-		cpu {
+-			sound-dai = <&q6afedai VOICE_RECORD_TX>;
+-		};
+-
+-		platform {
+-			sound-dai = <&q6routing>;
+-		};
+-	};
+-
+-	voice-farend-dai-link {
+-		link-name = "Voice Farend Playback";
+-		qcom,dpcm-backend;
+-
+-		cpu {
+-			sound-dai = <&q6afedai VOICE_PLAYBACK_TX>;
+-		};
+-
+-		platform {
+-			sound-dai = <&q6routing>;
+-		};
+-	};
+-
+-	slim7-rx-dai-link {
+-		link-name = "SLIMBUS_7 Playback";
+-
+-		cpu {
+-			sound-dai = <&q6afedai SLIMBUS_7_RX>;
+-		};
+-
+-		platform {
+-			sound-dai = <&q6routing>;
+-		};
+-
+-		codec {
+-			sound-dai = <&bt_audio 0>;
+-		};
+-	};
+-
+-	slim7-tx-dai-link {
+-		link-name = "SLIMBUS_7 Capture";
+-
+-		cpu {
+-			sound-dai = <&q6afedai SLIMBUS_7_TX>;
+-		};
+-
+-		platform {
+-			sound-dai = <&q6routing>;
+-		};
+-
+-		codec {
+-			sound-dai = <&bt_audio 1>;
+-		};
+-	};
+ };
+ 
+ &mdss_dsi0_out {
+@@ -1718,6 +1638,87 @@
+ 		};
+ 	};
+ 
++	/*
++	 * Bluetooth call audio: the DSP port SLIMBUS_7 on one end and the WCN6750 SCO ports on the
++	 * other, as the stock firmware does. A CS voice call never crosses the CPU, so a headset can
++	 * only get it this way. Backend links: they add no PCM and do not shift the numbering.
++	 */
++	/*
++	 * The DSP copy of a phone call, as on surya: backends with no codec, whose far side is inside
++	 * the DSP. VOC_REC_DL / VOC_REC_UL in q6routing record the downlink / uplink onto a front end,
++	 * so a call can be checked or recorded although its audio never crosses the CPU.
++	 */
++	voice-rec-dl-dai-link {
++		link-name = "Voice Downlink Capture";
++		qcom,dpcm-backend;
++
++		cpu {
++			sound-dai = <&q6afedai VOICE_RECORD_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++	};
++
++	voice-rec-ul-dai-link {
++		link-name = "Voice Uplink Capture";
++		qcom,dpcm-backend;
++
++		cpu {
++			sound-dai = <&q6afedai VOICE_RECORD_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++	};
++
++	voice-farend-dai-link {
++		link-name = "Voice Farend Playback";
++		qcom,dpcm-backend;
++
++		cpu {
++			sound-dai = <&q6afedai VOICE_PLAYBACK_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++	};
++
++	slim7-rx-dai-link {
++		link-name = "SLIMBUS_7 Playback";
++
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_7_RX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&bt_audio 0>;
++		};
++	};
++
++	slim7-tx-dai-link {
++		link-name = "SLIMBUS_7 Capture";
++
++		cpu {
++			sound-dai = <&q6afedai SLIMBUS_7_TX>;
++		};
++
++		platform {
++			sound-dai = <&q6routing>;
++		};
++
++		codec {
++			sound-dai = <&bt_audio 1>;
++		};
++	};
++
+ };
+ 
+ 
