@@ -40,3 +40,22 @@ Lo que queda abierto, y por dónde empezar.
 - **Sensores**: decidir si el interruptor `spacewar-sensores.conf` sobra ya (con el parche de
   iio-sensor-proxy, phosh se recuperaría solo).
 - **Micrófonos digitales** del WCD9385 con mainline: no dan audio (los analógicos sí).
+
+## ⏳ Rebasar los parches de phosh a la 0.59
+
+El repositorio ofrece **phosh 0.59** (`99990.59.0-r1`), que sustituye a la `99990.57.0-r102` del proyecto.
+Al actualizar se pierden los dos parches de `packages/phosh/`; **por decisión del usuario se deja así de
+momento** (2026-11-22).
+
+- **`0002-despertar-automatico-no-enciende-la-pantalla.patch`** es el que importa: sin él la pantalla vuelve
+  a encenderse en cada despertar automático del firmware (~2,3 por hora, también de noche) y cada rato
+  despierto cuesta ~150 mA; el consumo pasa de ~0,47 %/h a ~3 %/h.
+- **`0001`** añade el complemento de los botones propios en los ajustes rápidos (4 ranuras); sin él
+  desaparecen.
+
+**Qué hay que hacer al retomarlo**: portar los ~20 líneas de `0002` a `src/monitor-manager.c` de 0.59 —la
+función `power_save_mode_changed_cb` sigue existiendo— interceptando `PHOSH_MONITOR_POWER_SAVE_MODE_ON` y
+convirtiéndolo en OFF cuando `/run/despertar-origen` diga `automatico` y sea reciente, consumiendo la marca;
+lo mismo con `0001`; subir `pkgrel` y recompilar. Mientras tanto, para no perderlo: `sudo apk hold phosh
+phosh-lang phosh-schemas phosh-systemd phosh-portalsconf` **y phoc** (van acoplados: phosh 0.57 con phoc
+0.59 puede no arrancar la sesión).
