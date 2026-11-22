@@ -213,6 +213,15 @@ class Nucleo:
         """El ultimo arranque del flujo al chip fallo («chip not enumerated») y no hubo uno bueno despues."""
         return self.t_chip_no_enumerado > self.t_canal[157]
 
+    def flujo_nunca_arrancado(self):
+        """Ni una sola vez se reservo el canal 157 en este arranque (ni fallo ni exito).
+
+        spacewar, 2026-11-22: tras pasar a 7.2.9 el PCM de voz abria pero el camino al chip no se intentaba
+        siquiera —ni «chip not enumerated» ni reserva del canal—, y como la comprobacion solo miraba que NO
+        hubiera errores, el supervisor daba el circuito por montado y avisaba «CALL EN EL CASCO» sin audio.
+        """
+        return not self.arranques_157 and not self.t_canal[157]
+
 
 class Sistema:
     """Todo lo que lee o cambia en el movil. Las pruebas lo sustituyen."""
@@ -1128,6 +1137,10 @@ class Supervisor:
             return ("rutas", "puertos del DSP (tx=%s)" % n.tx)
         if n.flujo_casco_sin_arrancar():
             return ("flujo", "flujo al casco sin arrancar (chip not enumerated y canal 157 sin reservar)")
+        # Sin NINGUNA evidencia de flujo (ni error ni reserva del canal 157) tampoco vale: el 22-11 el PCM
+        # de voz abria pero el camino al chip no se intentaba, y el supervisor daba el circuito por montado.
+        if n.flujo_nunca_arrancado() and self.sis.sesion_dsp() is not True:
+            return ("flujo", "el flujo al casco no ha arrancado nunca (sin canal 157 ni sesion de voz)")
         if n.t_error_slim > n.t_tx:
             return ("rutas", "SLIMbus (%s)" % n.error_slim)
         if self.sis.mezclador_bt() is False:

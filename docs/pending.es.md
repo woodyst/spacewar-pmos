@@ -77,3 +77,14 @@ restantes hay que portarlos a 99990.8.0 y recompilar (`scripts/94-libcamera.sh`)
 **0010 (autoenfoque por contraste)**, **0009 (enfoque manual)**, **0011 (encender la lente solo mientras se
 usa, dw9719)**, **0012 (udmabuf)** y **0013 (contexto EGL al parar)**. Sin ellos la cámara funciona **sin
 autoenfoque** y con menos rendimiento.
+
+## ⏳ La voz no arranca en el kernel 7.2.9
+
+Tras el rebase del kernel, las llamadas **no pasan al casco**. Cadena medida: el PCM de voz (`CS-Voice`) pasó a
+`hw:0,6` (se detecta por nombre, ya no hay número fijo), la tarjeta entra en «Voice Call (Bluetooth)» y los
+mezcladores del camino de voz quedan encendidos — pero el kernel **no llega a intentar** el camino al chip
+(`bus channel 157 reserved` = 0, `chip not enumerated` = 0) y el `read` del PCM devuelve EINVAL: el front-end
+`CS-Voice` de nuestro DTS no levanta el backend en la máquina de sonido nueva.
+
+✅ Mientras tanto se corrigió el **aviso falso**: `comprobar()` exige evidencia de flujo (canal 157 reservado o
+sesión de voz abierta); antes decía «llamada en el casco» sin audio.

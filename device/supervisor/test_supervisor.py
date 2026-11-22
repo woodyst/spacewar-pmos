@@ -374,6 +374,26 @@ class Fallos(Base):
         self.assertEqual(self.avisos, [])
 
 
+class FlujoSinEvidencia(Base):
+    """2026-11-22: el PCM de voz abria pero el camino al chip no se intentaba (ni error ni canal 157).
+
+    El supervisor daba el circuito por montado y avisaba «llamada en el casco» sin audio.
+    """
+
+    def test_sin_ninguna_evidencia_de_flujo_no_se_da_por_montado(self):
+        self.sis.chip_enumerado = False
+        self.sis.enumerable = False          # el calentamiento no lo despierta
+        self.sis.sesion = False              # y la sesion de voz del DSP esta cerrada
+        self.empezar()
+        self.nucleo.arranques_157 = []
+        self.nucleo.t_canal = {157: 0.0, 159: 0.0}
+        self.nucleo.t_chip_no_enumerado = 0.0
+        self.reloj.t += 8
+        self.sup.revisar()
+        # lo importante: NO se anuncia montado
+        self.assertNotIn("montado", self.claves())
+
+
 class Calentamiento(Base):
     """spacewar 2026-11-10: la primera llamada de cada arranque fallaba siempre.
 
