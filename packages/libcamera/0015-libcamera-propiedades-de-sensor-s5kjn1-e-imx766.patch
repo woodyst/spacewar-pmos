@@ -1,0 +1,40 @@
+Propiedades de sensor para s5kjn1 e imx766 (spacewar).
+
+Sin retardos declarados el AGC corrige mirando un fotograma que aún no refleja el cambio y el
+brillo va a saltos (visto en la ultra gran angular, 2026-11-22). Se declaran 2 fotogramas, como
+hacen otros sensores cuando el driver no los declara.
+--- a/src/libcamera/sensor/camera_sensor_properties.cpp
++++ b/src/libcamera/sensor/camera_sensor_properties.cpp
+@@ -448,6 +448,32 @@
+ 			},
+ 			.sensorDelays = { },
+ 		} },
++		/*
++		 * ⚠️ spacewar (2026-11-22): los dos sensores de las traseras. Sin retardos declarados
++		 * el AGC corrige mirando un fotograma que todavía no refleja el cambio y el brillo va a
++		 * saltos (visto en la ultra gran angular). Se declaran 2 fotogramas para exposición,
++		 * ganancia y blanking, que es lo que usan otros sensores cuando el driver no lo dice.
++		 */
++		{ "s5kjn1", {
++			.unitCellSize = { 800, 800 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2,
++			},
++		} },
++		{ "imx766", {
++			.unitCellSize = { 1000, 1000 },
++			.testPatternModes = {},
++			.sensorDelays = {
++				.exposureDelay = 2,
++				.gainDelay = 2,
++				.vblankDelay = 2,
++				.hblankDelay = 2,
++			},
++		} },
+ 		{ "ov5647", {
+ 			.unitCellSize = { 1400, 1400 },
+ 			.testPatternModes = {},

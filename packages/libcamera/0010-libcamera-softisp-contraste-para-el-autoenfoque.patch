@@ -73,7 +73,7 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
  } /* namespace libcamera */
 --- /dev/null
 +++ b/src/ipa/softisp/algorithms/af.cpp
-@@ -0,0 +1,221 @@
+@@ -0,0 +1,277 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/*
 + * Contrast-detection autofocus
@@ -93,6 +93,7 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +#include "af.h"
 +
 +#include <algorithm>
++#include <cmath>
 +
 +#include <libcamera/base/log.h>
 +
@@ -111,8 +112,49 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +{
 +	context.ctrlMap[&controls::LensPosition] =
 +		ControlInfo(0.0f, 1.0f, 0.0f);
++	/* La app puede elegir entre automático (por defecto) y manual */
++	context.ctrlMap[&controls::AfMode] = ControlInfo(
++		static_cast<int32_t>(controls::AfModeManual),
++		static_cast<int32_t>(controls::AfModeContinuous),
++		static_cast<int32_t>(controls::AfModeContinuous));
 +
 +	return 0;
++}
++
++/*
++ * ⚠️ spacewar (2026-11-22): enfoque MANUAL. La app manda LensPosition (0..1) y, si el modo
++ * es manual, el algoritmo deja de moverse y se queda donde se le diga. Sin esto se anunciaba
++ * LensPosition pero no se atendía: el automático seguía moviendo la lente por su cuenta.
++ */
++void Af::queueRequest(IPAContext &context, [[maybe_unused]] const uint32_t frame,
++		      [[maybe_unused]] IPAFrameContext &frameContext,
++		      const ControlList &controls)
++{
++	auto &af = context.activeState.af;
++
++	if (!af.available)
++		return;
++
++	const auto &mode = controls.get(controls::AfMode);
++	const auto &position = controls.get(controls::LensPosition);
++
++	if (position.has_value()) {
++		state_ = State::Manual;
++		moveTo(context, min_ + std::lround(position.value() * (max_ - min_)));
++		LOG(IPASoftAf, Debug)
++			<< "Manual focus: " << position.value() << " -> " << position_;
++		return;
++	}
++
++	if (mode.has_value()) {
++		if (mode.value() == controls::AfModeManual && state_ != State::Manual) {
++			state_ = State::Manual;
++			LOG(IPASoftAf, Debug) << "Manual focus: keeping " << position_;
++		} else if (mode.value() != controls::AfModeManual && state_ == State::Manual) {
++			LOG(IPASoftAf, Debug) << "Autofocus again";
++			startClimb(context);
++		}
++	}
 +}
 +
 +int Af::configure(IPAContext &context,
@@ -183,6 +225,19 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +{
 +	auto &af = context.activeState.af;
 +
++	/* La posición actual, siempre, para que la app sepa dónde está la lente */
++	if (af.available && max_ > min_)
++		metadata.set(controls::LensPosition,
++			     static_cast<float>(position_ - min_) / (max_ - min_));
++
++	if (state_ == State::Manual) {
++		if (af.pending) {
++			af.pending = false;
++			return;
++		}
++		return;
++	}
++
 +	LOG(IPASoftAf, Debug)
 +		<< "process: available " << af.available << " state " << static_cast<int>(state_)
 +		<< " sharpness " << stats->sharpness
@@ -248,10 +303,11 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +	} else if (!havePrev_) {
 +		/* First reading: nothing to compare against yet, just step. */
 +		havePrev_ = true;
-+	} else if (fom < prevFom_) {
++	} else if (fom < prevFom_ * kReverseRatio) {
 +		/*
-+		 * That step made things worse, so the peak is behind us: turn
-+		 * around and look more closely.
++		 * That step made things clearly worse, so the peak is behind us:
++		 * turn around and look more closely. El margen (kReverseRatio)
++		 * evita invertir por el ruido de las estadísticas.
 +		 */
 +		direction_ = -direction_;
 +		step_ /= 2;
@@ -297,7 +353,7 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +} /* namespace libcamera */
 --- /dev/null
 +++ b/src/ipa/softisp/algorithms/af.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,97 @@
 +/* SPDX-License-Identifier: LGPL-2.1-or-later */
 +/*
 + * Contrast-detection autofocus
@@ -319,6 +375,9 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +
 +	int init(IPAContext &context, const ValueNode &tuningData) override;
 +	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void queueRequest(IPAContext &context, const uint32_t frame,
++			  IPAFrameContext &frameContext,
++			  const ControlList &controls) override;
 +	void process(IPAContext &context, const uint32_t frame,
 +		     IPAFrameContext &frameContext,
 +		     const SwIspStats *stats,
@@ -332,13 +391,23 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +	 */
 +	static constexpr unsigned int kInitialStepDivisor = 8;
 +	/* Stop once the step is this small: below it the lens does not move */
-+	static constexpr int32_t kMinStep = 4;
++	/*
++	 * Parar en 8 (de 4096, un 0,2 %) y no en 2: el pico de nitidez es ancho, así que bajar
++	 * más no cambia el resultado y sí cuesta segundos (medido el 2026-11-22: con paso 2
++	 * gastaba las 60 medidas y tardaba ~25 s para acabar en la misma posición).
++	 */
++	static constexpr int32_t kMinStep = 8;
 +	/*
 +	 * Frames to let pass after moving the lens before its statistics are
 +	 * trusted: the move takes time, and the figure of merit that arrives
 +	 * right after belongs to a frame that was already in flight.
 +	 */
-+	static constexpr unsigned int kSettleFrames = 3;
++	static constexpr unsigned int kSettleFrames = 6;
++	/*
++	 * Solo se da la vuelta si la imagen empeora de forma CLARA: con el ruido de las
++	 * estadísticas, una bajada del 1-2 % no distingue una posición peor de una igual.
++	 */
++	static constexpr double kReverseRatio = 0.97;
 +	/*
 +	 * Focus is only chased again once the picture has been clearly and
 +	 * persistently worse than what the last climb achieved. Reacting to
@@ -349,7 +418,7 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +	/* Statistics to ignore after settling, so a climb cannot chain */
 +	static constexpr unsigned int kCooldownFrames = 20;
 +	/* Give up rather than climb forever on a noisy or featureless scene */
-+	static constexpr unsigned int kMaxMeasurements = 40;
++	static constexpr unsigned int kMaxMeasurements = 28;
 +
 +	void startClimb(IPAContext &context);
 +	void moveTo(IPAContext &context, int32_t position);
@@ -358,6 +427,8 @@ ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
 +		Idle,
 +		Climbing,
 +		Settled,
++		/* La app manda la posición: no se mueve sola */
++		Manual,
 +	};
 +
 +	State state_ = State::Idle;
