@@ -1,0 +1,18 @@
+# /etc/systemd/system/q6voiced-device.service — spacewar (2026-11-22)
+# Antes de arrancar q6voiced, averigua en qué PCM está «CS-Voice» y escribe /run/q6voiced/q6voiced.conf.
+# El número NO es fijo: cambió de hw:0,3 a hw:0,6 al actualizar el kernel (7.2.9) y con un número fijo las
+# llamadas se quedaban sin voz sin ningún error visible. Ver /usr/local/sbin/cs-voice-device.sh.
+# Lo instala scripts/60-llamadas.sh.
+[Unit]
+Description=Averigua el PCM de la voz (CS-Voice) para q6voiced
+Before=q6voiced.service
+After=systemd-udev-settle.service sound.target
+Wants=sound.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/cs-voice-device.sh --esperar 30
+
+[Install]
+WantedBy=q6voiced.service

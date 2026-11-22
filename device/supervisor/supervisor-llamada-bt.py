@@ -111,7 +111,9 @@ def perfil_voz(casco):
     return next((p for p in PERFILES_VOZ if casco["perfiles"].get(p)), None)
 P_CASCO_MUSICA = ("a2dp-sink", "a2dp-sink-sbc")
 PUERTO_TX_CASCO = 151
-PCM_VOZ = "/proc/asound/card0/pcm3p/sub0/status"      # spacewar: CS-Voice es hw:0,3 (en surya era pcm4p)
+# El PCM de voz NO tiene número fijo: cambia con el orden de los DAI links del kernel (22-11: de hw:0,3 a
+# hw:0,6 al pasar a 7.2.9). Se busca por el NOMBRE del PCM (pcm_voz()) y se cachea.
+_pcm_voz_cache = {}
 # Parche 0129 (kernel r81): rehacer la sesion de voz ENTERA (MVM+CVS+CVP) al
 # mover la llamada. El 2026-09-10 a las 17:10 se aplico tambien al PRIMER paso
 # al casco de la llamada y coincidio con el ADSP estrellado (y detras el modem).
@@ -466,11 +468,27 @@ class Sistema:
                 campo("Speaker enabled", "_ON"),
                 campo("Mic muted", "_MUTED"))
 
+    def ruta_pcm(self, dev):
+        """«/proc/asound/card0/pcm6p/sub0/status» a partir de «hw:0,6»."""
+        m = re.match(r"hw:(\d+),(\d+)$", dev or "")
+        if m is None:
+            return None
+        return "/proc/asound/card%d/pcm%dp/sub0/status" % (int(m.group(1)), int(m.group(2)))
+
     def sesion_dsp(self):
+        dev = _pcm_voz_cache.get("dev")
+        if dev is None:
+            dev = self.pcm_voz()
+            _pcm_voz_cache["dev"] = dev
+        ruta = self.ruta_pcm(dev)
+        if ruta is None:
+            return None
         try:
-            with open(PCM_VOZ) as f:
+            with open(ruta) as f:
                 return "closed" not in f.read()
         except OSError:
+            # el número cambió (kernel nuevo): se vuelve a buscar la próxima vez
+            _pcm_voz_cache.pop("dev", None)
             return None
 
     def sumideros_casco(self):

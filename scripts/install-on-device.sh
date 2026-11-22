@@ -131,6 +131,9 @@ inst device/energia/consumo-reposo-muestra.sh   /usr/local/sbin/consumo-reposo-m
 inst device/energia/info_carga.sh               /usr/local/bin/info_carga.sh                755
 inst device/energia/vigia-microfono.sh          /usr/local/bin/vigia-microfono.sh           755
 inst device/supervisor/supervisor-llamada-bt.py /usr/local/bin/supervisor-llamada-bt.py     755
+inst device/llamadas/cs-voice-device.sh         /usr/local/sbin/cs-voice-device.sh          755
+inst device/llamadas/q6voiced-device.service    /etc/systemd/system/q6voiced-device.service           644
+inst device/llamadas/q6voiced-cs-voice.conf     /etc/systemd/system/q6voiced.service.d/cs-voice.conf  644
 
 say "echo cancellation (needs the factory voice calibration, not included)"
 inst device/eco/hexagonrpcd-adsp-audiopd.service /etc/systemd/system/hexagonrpcd-adsp-audiopd.service 644
@@ -153,6 +156,7 @@ S 'set -e
   sudo systemctl enable btmon-arranque brillo-persistente perro-vivo vigia-ipa vigia-modem \
                        bateria-sin-despertar contadores-glink despertar-causa cancelacion-eco \
                        reparar-spacewar.path reparar-spacewar.service \
+                       q6voiced-device \
                        hexagonrpcd-adsp-audiopd
   systemctl --user daemon-reload
   systemctl --user enable llamada-al-bluetooth hfp-registrado aviso-bt-caido \
