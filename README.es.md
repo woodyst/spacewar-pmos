@@ -88,6 +88,13 @@ salta.
 ⚠️ El `pkgrel` del kernel es alto a propósito, para que una actualización oficial del mismo
 `pkgver` no lo sustituya en silencio.
 
+⚠️ **Al rebasar el kernel a una versión nueva**, el `APKBUILD` de upstream no trae dos cosas nuestras y hay
+que volver a ponerlas: `LOCALVERSION="-r$pkgrel"` en el `make` de `build()` (cada kernel con su
+`/lib/modules/7.2.9-rN`, que es lo que permite tener el viejo de respaldo) y el `pkgrel` alto. Y del árbol
+nuevo hay que revisar qué parches ya están dentro: el salto 7.2.2 → 7.2.9, por ejemplo, hizo obsoletos el
+import de `q6voice` del 0008 (reescrito como reemplazo), el registro de topologías del 0009 y los servicios
+de voz del 0013 (ya en `kodiak.dtsi`).
+
 ## Flashearlo en el teléfono
 
 El bootloader de Nothing acepta un `boot.img` mainline **solo si `vendor_boot` y `dtbo` no están** —

@@ -3,11 +3,11 @@
 maintainer="Luca Weiss <luca@lucaweiss.eu>"
 _flavor="postmarketos-qcom-sc7280"
 pkgname=linux-$_flavor
-pkgver=7.2.2
-# spacewar (2026-09-12): el kernel de pmaports con parches propios (kernel/*.patch; la lista
-# source= la rehace scripts/40-compilar-kernel.sh). pkgrel alto para que una actualización del
-# mismo pkgver desde el repositorio oficial no lo sustituya.
-pkgrel=135
+pkgver=7.2.9
+# spacewar (2026-11-22): el kernel de pmaports 7.2.9 con parches propios (kernel/*.patch; la lista source=
+# la rehace scripts/40-compilar-kernel.sh). pkgrel alto para que una actualización del mismo pkgver desde
+# el repositorio oficial no lo sustituya. LOCALVERSION -r$pkgrel: cada kernel con su /lib/modules.
+pkgrel=136
 pkgdesc="Mainline Kernel fork for SC7280/SM7325/QCM6490 devices"
 arch="aarch64"
 _carch="arm64"
@@ -106,8 +106,9 @@ prepare() {
 
 build() {
 	unset LDFLAGS
-	# LOCALVERSION -r$pkgrel (spacewar, 2026-09-13): cada kernel con su /lib/modules/7.2.2-rN, para poder
-	# tener dos kernels en las ranuras A/B sin que uno pise los módulos del otro (como surya).
+	# LOCALVERSION -r$pkgrel (spacewar, 2026-09-13): cada kernel con su /lib/modules/7.2.9-rN, para poder
+	# tener dos instalados (el que corre y el de respaldo) sin que los módulos se pisen. Lo usa
+	# scripts/46-instalar-kernel-ab.sh para guardar y restaurar los del kernel anterior.
 	make ARCH="$_carch" LLVM=1 LOCALVERSION="-r$pkgrel" \
 		KBUILD_BUILD_VERSION="$((pkgrel + 1 ))-$_flavor"
 }
@@ -124,20 +125,19 @@ package() {
 	make modules_install dtbs_install \
 		ARCH="$_carch" \
 		LLVM=1 \
-		LOCALVERSION="-r$pkgrel" \
 		INSTALL_PATH="$pkgdir"/boot/ \
 		INSTALL_MOD_PATH="$pkgdir"/usr \
 		INSTALL_MOD_STRIP=1 \
 		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs
-	rm -f "$pkgdir"/lib/modules/*/build "$pkgdir"/lib/modules/*/source
+	rm "$pkgdir"/usr/lib/modules/*/build
 
 	install -D "$builddir"/include/config/kernel.release \
 		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
 }
 
 sha512sums="
-17fde188f587e72feda664da72046458bb38f892785c9fe0b9ffd410d161b6620d28da0afbf38705078539c2d34fbd9aa3556d8de61aafdbe30ccd62bd80769b  linux-v7.2.2-sc7280.tar.gz
-f4a5a5ce8474cf6425197304e56dd1b565164b7d0fb0a1e47def3d0f7c95749b1e2c30ac8412f27930a6acdafb491518a0a471ffb4f0bac3de99e78e9e99abab  config-postmarketos-qcom-sc7280.aarch64
+4852430f42a9e45833d590559875b869405d8d28d93fb9111f9b25f0b0d336c36d9be6a56a27da9c3cde642df17f792055729fa41256f51860794db3afdae674  linux-v7.2.9-sc7280.tar.gz
+094b76f2f82cd6805894dd1dfbfed41e4886d34f4a08ecdbb35dbca916d08cffdc120472b1d18b5bbad9fc2614dc7f5986e4fedd265b373f126ee76987162c32  config-postmarketos-qcom-sc7280.aarch64
 3a578039e0cbaf3a6bf3fd01661f1951c290442530b5f8607991178367117eb2942e95b00d115251271a8e612a442734d5065339305742b7037a47bf2d840a9c  0001-arm64-dts-qcom-sm7325-nothing-spacewar-enable-WCD9385-audio.patch
 c4c0c7d2b17c38018bead2d00746ddba365a8f996709a137801646f0a20b1dd94d463148f3078da33c34bc0bcd8dec6e44772a535adc44f2e95d104eaeaf534c  0002-FROMLIST-arm64-dts-qcom-sm7325-nothing-spacewar-Add-.patch
 e4453169109254b028f6e8109140e1ea6cc953216c8f824280f4fa34e9fe7ac34a5be01f6551ad18fcd2ae87c59a4565bd5fd124b2b8c3f227d23a56baf9661f  0003-FROMLIST-drivers-media-i2c-s5kjn1-Add-support-for-19.patch
@@ -145,12 +145,12 @@ e4453169109254b028f6e8109140e1ea6cc953216c8f824280f4fa34e9fe7ac34a5be01f6551ad18
 0eb572f90f97ac3e4e4d2141fa1741facdef9d0cb01fd9f8b82763752b5e833a0d5df9c48bdc3510cfd605c881cb80760cb1ef30573cd21dd0fe9273e7a7e005  0005-FROMLIST-RFT-media-i2c-dw9719-Add-DW9800W-support.patch
 73ede1f780a529afff135715295982de4d9ed5b348fce21b045d27917c06007098972089f7c1acb04e30bf4f5fa9ecdec1f229a2eb2da81bb1a2c145fc75fca2  0006-FROMLIST-RFT-arm64-dts-qcom-sm7325-nothing-spacewar-.patch
 6d8798d671983504bf8ebffb99ca1c5d6149a87f0c5e8204d36b024426977a692a23361a33b997fe2b65ccdca71225dff2b8fccb5c44370c8a81b28928c1b4b6  0007-arm64-dts-qcom-sm7325-nothing-spacewar-tfa9873-stereo.patch
-485b6d563509c2b8581a5578854fcd49d603234d506718507918adad51fa37247eaacb0665acb10c11c445005f04888c814b331065d198992ff703b9626a541c  0008-ASoC-qdsp6-q6voice-import-the-CS-voice-call-stack-fr.patch
-5a1f7c9402b61287c3b17f22d0a74de2e17520cfb39d55cadbea7c22faa5ac963ce892f474cb1e852effc50a75dbdb3106559982fea53cc1808dcdbe7a2f73a7  0009-ASoC-qdsp6-AFE-SLIMBUS_7-port-voice-routing-custom-t.patch
+4686093b7bf0147290166f626d404e83ddb6c714fdbca0d4e2ec4c6734be1d1e44a0c9fec4f1daf800dfa27f83803abdd591155b30978c419a20ca1ad2e5f41b  0008-ASoC-qdsp6-q6voice-import-the-CS-voice-call-stack-fr.patch
+878931ec270058d44e01e447184bce3f51a9db5c5ece235bcd87d942cfc2c588dde3cf5406f2387986658ef8a1b6e9022065c2e212eb3b4310aa064ef6badfc6  0009-ASoC-qdsp6-AFE-SLIMBUS_7-port-voice-routing-custom-t.patch
 6975ad09496ba6d7c7aeebf4010d56c9e20db4f6ce0ad419c1a980ac7e582d8d8e22a5312344585ed9841aa02e1f66fc9dc4419082c9053d54a711a97b19a240  0010-ASoC-qcom-sm8250-Bluetooth-SCO-over-SLIMbus-links-an.patch
 341986656dc624961bfd4f2b3ee1df7ddadf9bf85ce544e554af041e28459682a196b235fb301b942b52b3e1e17b3d9fc34d79efd335030059f540e1681172be  0011-Bluetooth-hci_qca-SCO-offload-changes-from-surya-r93.patch
 093aae86453e3f80b0ea84824c29c8ef70c757388a1e764b4c96072aa7f329c4cd69f85dee8684c04aa83db0ba5a2fda2ec22a6201177eae62b0d08433881d10  0012-slimbus-qcom-ngd-ctrl-stream-channel-removal-and-rob.patch
-2bc47b05cdf305609bca909fffeca281a58b8ed538b0920284a8bf8c7cffbae85921bce21ecab79320f8c6e04d5817584e16287e397083a889c3502ce9b95aea  0013-arm64-dts-qcom-sm7325-nothing-spacewar-wire-up-q6voi.patch
+37cf744c0f04db86bc096ec4999961c9af55a03ece4a2522e97058984d7552924bfc29a25697d31cacf330cd18517aa7a3a169dc8566e380203d185eea3ba963  0013-arm64-dts-qcom-sm7325-nothing-spacewar-wire-up-q6voi.patch
 fb43e3ea3ee96ae950900a6f58f3f3648e2f4daa3ad35910b69ad3c87252ef82f71b80a52a2bfe9c78a574adb6d8a914594c87d4741476ca5a3b2e46f094ff2b  0014-ASoC-codecs-tfa9872-add-an-output-switch-to-power-do.patch
 22c3b34f0c895e8d63de88e9d0c58b626bdfe3032bc7600e7dab8c9c845f4953386251fb2efeb61e8890c47c4f6968bd23c829a177261080f372eb1aaba64a9c  0015-slimbus-no-aplazar-el-sondeo-si-el-dispositivo-aun-n.patch
 73adcfd3c410b1d95df347e83a79dfe5974486b4e4984f933040c4e26dafdfb528229e896bcfe7905a9f96eafb8b8ea962e7473a67ab4d8ca7f636e47dab97bb  0016-ASoC-codecs-add-the-WCN399x-Bluetooth-SLIMBus-audio-.patch
