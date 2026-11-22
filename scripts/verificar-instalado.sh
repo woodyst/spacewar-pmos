@@ -102,6 +102,13 @@ else echo "❌ enlace UCM conf.d/sm8250/NP1.conf -> «$E» (esperado ../../Nothi
 # ⚠️ 2026-11-22: los enlaces de voz acabaron colgando del nodo del panel (DSI) porque los parches 0019/0022
 # insertaban con el contexto «platform {», que no es único. La tarjeta se quedaba con 7 enlaces y ASoC decía
 # «no backend DAIs enabled for CS-Voice»: las llamadas no pasaban al casco aunque todo lo demás estuviera bien.
+# ⚠️ 2026-11-22: tras actualizar, `pipewire-spa-libcamera` puede quedar en el simulacro 0-r0 (si libcamera está
+# pinneada) y entonces las cámaras existen en el kernel y no en PipeWire: ni portal ni apps.
+PL=$(ssh $SSH_OPTS "$MOVIL" '[ -f /usr/lib/spa-0.2/libcamera/libspa-libcamera.so ] && apk info -v 2>/dev/null | sed -n "s/^pipewire-spa-libcamera-\\(.*\\)$/\\1/p" | head -1' || true)
+case "${PL:-}" in
+	""|0-r0) echo "❌ falta el plugin de libcamera en PipeWire (pipewire-spa-libcamera «${PL:-ninguno}»): las apps no verán cámaras (93-camaras-pipewire.sh)"; emal=$((emal+1)); echo scripts/93-camaras-pipewire.sh >> "$T/scripts" ;;
+	*)       echo "✅ plugin de libcamera en PipeWire ($PL)" ;;
+esac
 F=$(ssh $SSH_OPTS "$MOVIL" 'ls /proc/device-tree/sound/ 2>/dev/null' | grep -c "slim7-.*-dai-link" || true)
 if [ "${F:-0}" -ge 2 ]; then echo "✅ enlaces SLIMBUS_7 dentro de /sound ($F)"
 else echo "❌ los enlaces SLIMBUS_7 no están bajo /sound (hay ${F:-0}): la voz no tendrá backend (kernel, parche 0060)"; emal=$((emal+1)); fi
