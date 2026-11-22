@@ -86,6 +86,11 @@ for d in "$HERE"/packages/* "$HERE/kernel"; do
 	elif [ "${i##*-r}" = "$r" ]; then echo "✅ $i"
 	elif [ "$pendiente" = si ]; then
 		echo "⏳ $i  — sustituido A PROPÓSITO (nuestro era -r$r): parche pendiente de rebasar, ver README"
+		# phosh 0.59 sin el parche 0001: además de la pantalla en despertares automáticos (0002), faltan los
+		# botones propios de los ajustes rápidos (complemento «mandato»): VPN y Waydroid (2026-11-22).
+		if [ "$n" = phosh ] && ! ssh $SSH_OPTS "$MOVIL" 'ls /usr/share/glib-2.0/schemas/ 2>/dev/null | grep -q mandato'; then
+			echo "   ⏳ faltan los botones de VPN y Waydroid (complemento «mandato», falto el parche 0001): los pone scripts/96-botones-mandato.sh"
+		fi
 	else
 		echo "❌ $i  — el nuestro es -r$r: una actualización lo ha SUSTITUIDO"; pmal=$((pmal+1)); echo "@$(script_de "$(basename "$d")")" >> "$T/scripts"
 	fi
