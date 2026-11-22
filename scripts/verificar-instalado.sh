@@ -14,10 +14,10 @@
 # Lo de /etc no suele correr peligro: apk no pisa un fichero de configuración modificado (deja el nuevo como .apk-new).
 # Al añadir a device/ algo que se instale, añadirlo a device/MANIFIESTO.tsv.
 #
-# Uso: [MOVIL=epo2lan] sh scripts/verificar-instalado.sh        Sale con 1 si algo no cuadra.
+# Uso: [MOVIL=phone] sh scripts/verificar-instalado.sh        Sale con 1 si algo no cuadra.
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 SSH_OPTS=${SSH_OPTS:-}
 MAN="$HERE/device/MANIFIESTO.tsv"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

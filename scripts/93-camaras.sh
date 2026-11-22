@@ -9,9 +9,9 @@
 # csiphy3), con el driver WIP de Danila Tikhonov. Hasta el 2026-09-14 iba en lista negra; ahora la quita si la
 # encuentra y la IMX766 se carga sola al arrancar. ⚠️ Sin ella camss no completa el grafo y no se ve ninguna cámara.
 #
-# Uso: [MOVIL=epo2lan] [SSH_OPTS=…] sh scripts/93-camaras.sh
+# Uso: [MOVIL=phone] [SSH_OPTS=…] sh scripts/93-camaras.sh
 set -eu
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 SSH_OPTS=${SSH_OPTS:-}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 

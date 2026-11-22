@@ -24,14 +24,14 @@
 # ⚠️ pmaports YA TRAE phosh (extra-repos/systemd/phosh) y pmbootstrap hace caso a ESA receta, no a la nuestra de
 # temp/: el paso 2 la aparta mientras compilamos y la devuelve al terminar, pase lo que pase.
 #
-# Uso: [INSTALAR=si] [MOVIL=epo2lan] sh scripts/96-botones-mandato.sh   |   sh scripts/96-botones-mandato.sh --ver
+# Uso: [INSTALAR=si] [MOVIL=phone] sh scripts/96-botones-mandato.sh   |   sh scripts/96-botones-mandato.sh --ver
 #      SOLO_CONFIG=si sh scripts/96-botones-mandato.sh      (no compila: solo reconfigura las ranuras)
 #      INSTALAR=si SOLO_INSTALAR=si sh scripts/96-botones-mandato.sh   (no compila: instala los .apk ya compilados)
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 IA_SSH=${IA_SSH:-ia}
 BASE=/home/edi/postmarketos-spacewar
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 SSH_OPTS=${SSH_OPTS:-}
 PKG=phosh
 P="$HERE/packages/$PKG"

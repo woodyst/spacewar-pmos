@@ -13,13 +13,13 @@
 # llamadas dejaron de ir al casco («tarjeta del movil sin perfil Bluetooth»). Los ficheros de /etc no corren
 # ese riesgo: apk los deja como .apk-new y no los pisa.
 #
-# Uso: [MOVIL=epo2lan] sh scripts/62-reparacion.sh
+# Uso: [MOVIL=phone] sh scripts/62-reparacion.sh
 # Revertir: sudo systemctl disable --now reparar-spacewar.path reparar-spacewar.service
 #           sudo rm /etc/systemd/system/reparar-spacewar.{path,service} \
 #                   /usr/local/sbin/reparar-spacewar.sh /usr/local/lib/spacewar/reparables.tsv
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 S=reparar-spacewar.sh
 U=reparar-spacewar.service
 P=reparar-spacewar.path

@@ -13,12 +13,12 @@
 # El algoritmo solo corre en las cámaras cuyo fichero de ajuste lista «- Af:» y que tienen lente en el DT: hoy la
 # ultra gran angular (DW9800W). La principal necesita su actuador AK7377 descrito en el kernel.
 #
-# Uso: [INSTALAR=si] [MOVIL=epo2lan] [SSH_OPTS=…] sh scripts/94-libcamera.sh
+# Uso: [INSTALAR=si] [MOVIL=phone] [SSH_OPTS=…] sh scripts/94-libcamera.sh
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 IA_SSH=${IA_SSH:-ia}
 BASE=/home/edi/postmarketos-spacewar
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 SSH_OPTS=${SSH_OPTS:-}
 PKG=libcamera
 P="$HERE/packages/$PKG"
@@ -41,11 +41,14 @@ if [ "${SOLO_INSTALAR:-no}" != si ]; then
 	# ⚠️ 2026-11-22: el buildroot aarch64 no se crea bien con el systemd 262.2 de systemd-edge (duplica
 	# ficheros entre bin/ y usr/bin/ y el commit falla, apk sale con 2). `--lax` evita que pmbootstrap lo
 	# zampe y `apk fix` deja el estado sano; el segundo intento compila. Ver README.
-	sh "$HERE/scripts/pmb.sh" build --lax --force --arch aarch64 $PKG || {
+	# ⚠️ si el build falla (p. ej. el umount de qemu que deja pmbootstrap), NO se sigue: instalar
+	# los .apk viejos hace creer que se probó lo nuevo (pasó el 2026-11-22 tres veces).
+	if ! sh "$HERE/scripts/pmb.sh" build --lax --force --arch aarch64 $PKG; then
 		echo ">> buildroot con errores de apk (systemd 262.2): apk fix y reintento"
 		sh "$HERE/scripts/pmb.sh" chroot -b aarch64 -- apk fix || true
-		sh "$HERE/scripts/pmb.sh" build --lax --force --arch aarch64 $PKG
-	}
+		sh "$HERE/scripts/pmb.sh" build --lax --force --arch aarch64 $PKG || {
+			echo "ERROR: la compilación falló; NO se instala nada (los .apk serían viejos)"; exit 1; }
+	fi
 	scp -q "$IA_SSH:$APORT/APKBUILD" "$P/APKBUILD"
 fi
 
@@ -71,5 +74,9 @@ ssh $SSH_OPTS "$MOVIL" "sudo -n apk add --allow-untrusted $LISTA && rm -f $LISTA
 MOVIL="$MOVIL" SSH_OPTS="$SSH_OPTS" sh "$HERE/scripts/93-camaras.sh" | grep -E "yaml|>> 1b|imx766"
 ssh $SSH_OPTS "$MOVIL" 'mmcli -m any --voice-list-calls 2>&1' | grep -q "No calls" \
 	|| { echo "ERROR: hay una llamada: wireplumber NO se reinicia (hacerlo al colgar)"; exit 1; }
-ssh $SSH_OPTS "$MOVIL" 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user restart wireplumber && echo "   wireplumber reiniciado"; sleep 5; timeout 30 cam -l 2>&1 | grep -iE "tuning file|^[0-9]+:"'
+# qcam: la herramienta de libcamera con deslizadores (enfoque manual, exposición). Sale de este mismo
+# paquete y es la única forma de tocar los controles desde el móvil: Snapshot no los expone.
+ssh $SSH_OPTS "$MOVIL" 'sudo -n apk add qcam 2>&1 | tail -1; command -v qcam'
+# ⚠️ pipewire también: el plugin spa-libcamera vive en su proceso y hay que recargarlo tras cambiar libcamera.
+ssh $SSH_OPTS "$MOVIL" 'export XDG_RUNTIME_DIR=/run/user/$(id -u); systemctl --user restart wireplumber pipewire pipewire-pulse 2>/dev/null; echo "   pipewire y wireplumber reiniciados"; sleep 6; timeout 30 cam -l 2>&1 | grep -iE "tuning file|^[0-9]+:"'
 echo ">> Instalado. Prueba: app Cámara, ultra gran angular, acercar y alejar algo; debería reenfocar."

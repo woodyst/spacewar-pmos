@@ -3,12 +3,12 @@
 #
 # Instala device/energia/93-usb-al-reposo.rules (el porqué y las medidas están ahí) y lo aplica en caliente.
 #
-# Uso: [MOVIL=epo2lan] sh scripts/97-usb-al-reposo.sh
+# Uso: [MOVIL=phone] sh scripts/97-usb-al-reposo.sh
 # Revertir: sudo rm /etc/udev/rules.d/93-usb-al-reposo.rules
 #           echo on | sudo tee /sys/bus/platform/devices/a600000.usb/power/control
 set -eu
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 R=93-usb-al-reposo.rules
 
 scp -q "$HERE/device/energia/$R" "$MOVIL:/tmp/$R"

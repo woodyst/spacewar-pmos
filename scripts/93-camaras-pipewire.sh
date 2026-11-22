@@ -19,10 +19,10 @@
 #
 # Es idempotente: con todo en su sitio solo dice «ya está».
 #
-# Uso: [MOVIL=epo2lan] [SSH_OPTS=…] sh scripts/93-camaras-pipewire.sh
+# Uso: [MOVIL=phone] [SSH_OPTS=…] sh scripts/93-camaras-pipewire.sh
 # Revertir: sudo cp /etc/apk/world.bak-<fecha> /etc/apk/world && sudo apk fix
 set -eu
-MOVIL=${MOVIL:-epo2lan}
+MOVIL=${MOVIL:-phone}
 SSH_OPTS=${SSH_OPTS:-}
 
 echo ">> 1. estado en $MOVIL"
@@ -79,6 +79,15 @@ fi
 # implementación «Access» de respaldo, y esa la aporta xdg-desktop-portal-gnome.
 # ⚠️ Y xdg-desktop-portal-wlr (que no pinta nada en phosh) mata su conexión de PipeWire y arrastra
 # al portal principal a un SIGSEGV: la app se queda colgada y no se cierra. Se deja desactivado.
+# La app (Snapshot) escribe en las carpetas XDG de fotos y vídeos; si su nombre no coincide con lo que
+# espera (p. ej. busca «Pictures» y aquí es «Imágenes»), sus sinks fallan con «Failed to start» y la app
+# se queda colgada. Se dejan los dos nombres apuntando al mismo sitio.
+echo ">> 3a. carpetas de fotos y vídeos"
+ssh $SSH_OPTS "$MOVIL" 'for par in "Imágenes:Pictures" "Vídeos:Videos"; do
+	d="${par%%:*}"; e="${par##*:}"
+	[ -d "$HOME/$d" ] && [ ! -e "$HOME/$e" ] && ln -s "$HOME/$d" "$HOME/$e" && echo "   $e -> $d"
+done; ls -d "$HOME/Imágenes" "$HOME/Vídeos" >/dev/null 2>&1 && echo "   carpetas listas"'
+
 echo ">> 3b. portal de cámara"
 ssh $SSH_OPTS "$MOVIL" 'set -u
 apk info -e xdg-desktop-portal-gnome >/dev/null 2>&1 || sudo -n apk add xdg-desktop-portal-gnome
