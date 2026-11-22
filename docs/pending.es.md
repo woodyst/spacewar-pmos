@@ -25,6 +25,11 @@ Lo que queda abierto, y por dónde empezar.
 - **Calidad de imagen** de la principal: el ISP por software no tiene ajuste fino para la IMX766; la CCM
   de la trasera‑1 (`s5kjn1.yaml`) se puede afinar si aún se ve verdosa.
 - `AfMode` se publica pero no aparece en la lista de controles.
+- **El brillo da saltos al abrir la cámara**: el AGC de libcamera 0.8 corre a velocidad 1.0 durante los
+  10 primeros fotogramas (`kNumStartupFrames`) y luego amortigua a 0.2; ese arranque es el salto (y a veces
+  un fotograma oscuro). Medido al abrir: gran angular `93 129 132 22 135 135 133 133 133 133 132 132` y
+  principal `106 133 137 30 188 188 190 190 126 126 128 127`. Para suavizarlo: sembrar exposición/ganancia
+  iniciales en la `.yaml` o reducir `kNumStartupFrames`.
 
 ## LED Glyph
 
