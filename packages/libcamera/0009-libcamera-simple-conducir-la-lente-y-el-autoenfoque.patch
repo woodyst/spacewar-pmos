@@ -1,0 +1,138 @@
+Foco manual y autoenfoque: el pipeline simple conduce la lente (spacewar).
+
+El pipeline simple de libcamera no menciona el objetivo: libcamera lo enumera y lo deja sin usar, así
+que una cámara con actuador de enfoque no puede enfocar ni a mano. Aquí se busca la lente en el
+dispositivo de medios (el kernel solo la enlaza al sensor como «ancillary» en algunos drivers), se
+crea si hace falta y se le pasan las posiciones que pida la IPA; además se le entrega al ISP por
+software para que el algoritmo de autoenfoque la vea.
+
+Portado a 0.8 (2026-11-22).
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -35,6 +35,7 @@
+ 
+ #include "libcamera/internal/camera.h"
+ #include "libcamera/internal/camera_manager.h"
++#include "libcamera/internal/camera_lens.h"
+ #include "libcamera/internal/camera_sensor.h"
+ #include "libcamera/internal/camera_sensor_properties.h"
+ #include "libcamera/internal/converter.h"
+@@ -284,6 +285,14 @@
+ 			 MediaEntity *sensor);
+ 
+ 	bool isValid() const { return sensor_ != nullptr; }
++
++	/*
++	 * Focus lens, when the camera has one. The kernel only links the lens to the
++	 * sensor as an ancillary entity for some drivers, so it may have to be looked
++	 * up in the media device (see init()).
++	 */
++	std::unique_ptr<CameraLens> lens_;
++	CameraLens *focusLens_ = nullptr;
+ 	SimplePipelineHandler *pipe();
+ 
+ 	int init();
+@@ -632,6 +641,50 @@
+ 		}
+ 	}
+ 
++	/*
++	 * Set up the focus lens. The sensor exposes it only when the kernel links
++	 * it as an ancillary entity; when it is a plain entity of the media device
++	 * it has to be created here, or the lens can never be driven and
++	 * autofocus stays disabled.
++	 */
++	focusLens_ = sensor_->focusLens();
++	if (!focusLens_) {
++		/*
++		 * ⚠️ Solo si hay UNA lente en el dispositivo de medios: con varias cámaras,
++		 * quedarse con la primera que aparezca le da a este sensor el actuador de otra
++		 * (medido el 2026-11-22: la trasera-1 recibía el ak7375 de la principal, con otro
++		 * rango de recorrido). Sin enlace en el grafo y con varias lentes, mejor no tocar
++		 * ninguna.
++		 */
++		const MediaEntity *unica = nullptr;
++		unsigned int lentes = 0;
++		for (const MediaEntity *entity : sensor_->entity()->device()->entities()) {
++			if (entity->function() != MEDIA_ENT_F_LENS)
++				continue;
++			unica = entity;
++			lentes++;
++		}
++
++		if (lentes == 1) {
++			lens_ = std::make_unique<CameraLens>(unica);
++			if (lens_->init()) {
++				LOG(SimplePipeline, Warning)
++					<< "Lens " << unica->name() << " initialisation failed";
++				lens_.reset();
++			} else {
++				focusLens_ = lens_.get();
++				LOG(SimplePipeline, Debug) << "Using lens " << unica->name();
++			}
++		} else if (lentes > 1) {
++			LOG(SimplePipeline, Debug)
++				<< "Several lenses in the media device and none linked to the sensor: "
++				<< "not driving any";
++		}
++	}
++
++	if (focusLens_ && swIsp_)
++		swIsp_->setFocusLens(focusLens_);
++
+ 	video_ = pipe->video(entities_.back().entity);
+ 	ASSERT(video_);
+ 
+@@ -1048,7 +1101,28 @@
+ 
+ void SimpleCameraData::setSensorControls(const ControlList &sensorControls)
+ {
+-	delayedCtrls_->push(sensorControls);
++	/*
++	 * The lens is a device of its own, so its control rides along with the
++	 * sensor's but must not reach the sensor - nor the delayed controls,
++	 * which are keyed on the sensor's own control map.
++	 */
++	ControlList sensorOnly(sensor_->controls());
++
++	for (const auto &[id, value] : sensorControls) {
++		if (focusLens_ && id == V4L2_CID_FOCUS_ABSOLUTE) {
++			int32_t position = value.get<int32_t>();
++
++			if (focusLens_->setFocusPosition(position) < 0)
++				LOG(SimplePipeline, Warning)
++					<< "Failed to move the lens to " << position;
++
++			continue;
++		}
++
++		sensorOnly.set(id, value);
++	}
++
++	delayedCtrls_->push(sensorOnly);
+ 	/*
+ 	 * Directly apply controls now if there is no frameStart signal.
+ 	 *
+@@ -1058,7 +1132,7 @@
+ 	 * Both problems should be fixed.
+ 	 */
+ 	if (!frameStartEmitter_) {
+-		ControlList ctrls(sensorControls);
++		ControlList ctrls(sensorOnly);
+ 		sensor_->setControls(&ctrls);
+ 	}
+ }
+@@ -1651,7 +1725,12 @@
+ 		return data->converter_->configure(inputCfg, outputCfgs);
+ 	} else {
+ 		ipa::softisp::IPAConfigInfo configInfo;
+-		configInfo.sensorControls = data->sensor_->controls();
++		/*
++		 * Hand over the map the software ISP built, which carries the
++		 * focus lens' controls as well: without them the IPA cannot see
++		 * the lens and autofocus stays disabled.
++		 */
++		configInfo.sensorControls = data->swIsp_->sensorControls();
+ 		return data->swIsp_->configure(inputCfg, outputCfgs, configInfo, &data->controlInfo_);
+ 	}
+ }

@@ -3,15 +3,19 @@
 # (autoenfoque por contraste en el IPA simple), traídos de surya. Compila scripts/94-libcamera.sh.
 # 0011 (2026-09-14): el objetivo solo se abre (y el motor de enfoque solo se alimenta) mientras una app tiene la
 # cámara adquirida; antes el monitor de libcamera de WirePlumber dejaba los dos motores encendidos siempre.
-# 0012 (2026-09-14): el ISP por software usa /dev/udmabuf antes que la CMA de 16 MB (la cámara dejaba de
-# funcionar tras unas horas con «dma-heap allocation failure»).
+# 0012: ELIMINADO el 2026-11-22 — 0.8 ya usa /dev/udmabuf antes que la CMA
+#       (DmaBufAllocatorFlag::UDmaBuf en el constructor del ISP).
 # 0013 (2026-09-14): el debayer EGL destruye su contexto al parar; antes cada sesión dejaba un contexto huérfano
 # con un búfer de salida de 8 MB retenido en la GPU.
 maintainer="Robert Mader <robert.mader@collabora.com>"
 pkgname=libcamera
-_pkgver=0.7.2
+_pkgver=0.8.0
 pkgver=9999$_pkgver
-pkgrel=7
+# spacewar (2026-11-22): libcamera 0.8.0 — la que pide pipewire-spa-libcamera 1.6.11 — con los
+# parches nuestros que aplican. pkgrel alto para que una actualización del repositorio no la sustituya.
+# Los que NO están (0003/0005/0006 ya upstream; 0007/0008 los trae ya el aporte de pmOS;
+# 0004/0010/0013 pendientes de portar a la refactorización del softISP de 0.8.0).
+pkgrel=100
 pkgdesc="Linux camera framework"
 url="https://libcamera.org/"
 arch="all"
@@ -68,20 +72,14 @@ _tuning_files="
 source="https://gitlab.freedesktop.org/camera/libcamera/-/archive/v$_pkgver/libcamera-v$_pkgver.tar.gz
 	0001-libcamera-simple-Enable-softISP-for-the-Pinephone.patch
 	0002-libcamera-simple-Skip-hwISP-formats-if-swISP-is-acti.patch
-	0003-software_isp-debayer_egl-Re-add-log-for-failing-DMAB.patch
-	0004-ipa-simple-Derive-AGC-minimum-gain-step-from-sensor-.patch
-	0005-debayer-Further-demote-Unsupported-input-format-log.patch
-	0006-debayer_egl-Use-untransposed-matrix-to-fix-GLES-2.0.patch
-	0007-simple-Limit-swISP-output-sizes.patch
-	0008-libcamera-Add-quad-Bayer-CFA-layout-support.patch
-	0009-libcamera-simple-expose-manual-focus-when-the-sensor.patch
-	0010-libcamera-soft-contrast-detection-autofocus.patch
+	0009-libcamera-simple-conducir-la-lente-y-el-autoenfoque.patch
+	0010-libcamera-softisp-contraste-para-el-autoenfoque.patch
 	0011-libcamera-camera_lens-Power-the-lens-only-while-the-c.patch
-	0012-libcamera-software_isp-Prefer-udmabuf-for-the-output-buffers.patch
-	0013-libcamera-software_isp-debayer_egl-Destroy-the-EGL-context-on-stop.patch
-	qcam.desktop
+	0012-libcamera-usar-udmabuf-antes-que-la-cma.patch
+	0013-libcamera-py-crear-el-dir-antes-de-los-enlaces.patch
+	0014-libcamera-helpers-de-sensor-s5kjn1-e-imx766.patch
 	$_tuning_files
-	"
+"
 builddir="$srcdir/$pkgname-v$_pkgver"
 # gstreamer tests fail
 # manual strip because ipa .sign files depend on the file contents- have to re-sign after strip
@@ -104,6 +102,17 @@ ppc64le|s390x|riscv64|loongarch64)
 esac
 
 build() {
+	# ⚠️ 0.8 (2026-11-22): src/py/libcamera/meson.build ejecuta `ln -fsrT` al configurar y el `ln` de
+	# busybox no tiene ni -r ni -T, así que la configuración muere con
+	# «Command `/usr/sbin/ln -fsrT ...` failed». Se le pone delante un `ln` que sí los tiene (coreutils),
+	# sin depender de en qué directorio caiga cada uno en el chroot.
+	_lnbin="$srcdir/.ln-coreutils"; mkdir -p "$_lnbin"
+	_core=/usr/bin/coreutils; [ -x "$_core" ] || _core=/bin/coreutils
+	# ⚠️ tiene que ser un ENLACE llamado «ln», no un guion que llame a `coreutils ln`: el binario
+	# multiplexor de coreutils decide el applet por argv[0] y con `coreutils ln -fsrT` responde
+	# «invalid option -- 'f'» (probado el 2026-11-22).
+	ln -sf "$_core" "$_lnbin/ln"
+	export PATH="$_lnbin:$PATH"
 	abuild-meson \
 		-Dpipelines=auto,virtual \
 		-Dv4l2=true \
@@ -119,7 +128,6 @@ check() {
 
 package() {
 	DESTDIR="$pkgdir" meson install --no-rebuild -C output
-	install -Dm644 -t "$pkgdir"/usr/share/applications "$srcdir"/qcam.desktop
 
 	# manual strip first..
 	scanelf --recursive \
@@ -138,7 +146,10 @@ ipa() {
 	amove usr/share/libcamera/ipa
 
 	for _tuning_file in $_tuning_files; do
-		install -Dm644 -t "$subpkgdir"/usr/share/libcamera/ipa/simple \
+		# ⚠️ 0.8 cambió la carpeta: el IPA «softisp» busca en ipa/softisp, no en ipa/simple
+		# (2026-11-22: sin esto libcamera decía «Configuration file 's5kjn1.yaml' not found» y se
+		# quedaba con la calibración genérica: color raro y sin el «- Af:» del sensor).
+		install -Dm644 -t "$subpkgdir"/usr/share/libcamera/ipa/softisp \
 			"$srcdir"/"$_tuning_file"
 	done
 
@@ -157,7 +168,6 @@ qcam() {
 	depends=""
 	amove usr/bin/qcam
 
-	amove usr/share/applications/qcam.desktop
 }
 
 gstreamer() {
@@ -192,21 +202,15 @@ py3() {
 
 
 sha512sums="
-b317cdc96f61682ee0bf26dfb7c4d6441db9a9c5b93ab53528121a8cd44862b3d59cbaa3881bb0837e3e381564c184c7b742124aef4267eea754c6083de353c1  libcamera-v0.7.2.tar.gz
+21ada092a1944c3476e0a254fe82d2775d2eb833d931dd051bd551a9f12ae596b3cd57f3792335d4ad86479e2247d23056d30e2631aa620897d067002c88e060  libcamera-v0.8.0.tar.gz
 c6e4d44758bc3afa639d5dfa30113e92270094f1dca8505982e85629ff88fab890ec3f14098600bdf7498259becea4bdadbff117aa96b8bc0a043ffeb4fb2f4f  0001-libcamera-simple-Enable-softISP-for-the-Pinephone.patch
 1a84267c138192f3999b870985030b0cf9bf0b61b911481bdef73d6a377bea4159f438a21180db87c3ff97c9da9f00fb0885cfedde828f4237d0ce03196d6ed7  0002-libcamera-simple-Skip-hwISP-formats-if-swISP-is-acti.patch
-e90c6c742a594e6af2efec8b9ce7cf133ed294645840f72a07408eabc010e50192462a653ef6e43b4558c9390ac516d0eefbc606691da55e604f5d20f871a0db  0003-software_isp-debayer_egl-Re-add-log-for-failing-DMAB.patch
-6159dc60692382a712c683fa63bb131bd1d4978e1e639b90940ae5f340ac396d1f9b1abfb9b450cf29c0e484018af3f80e87cc9a4b7b4e856038bd4154bdab2c  0004-ipa-simple-Derive-AGC-minimum-gain-step-from-sensor-.patch
-de5fd287fea2c71754beb7d72a6fd739a94ec7a47ed3ea09a60130bee1c08efdcf94e12b1830914e7e498b0d80a0cb4550a614aeb899129fba9d4f06918f5c63  0005-debayer-Further-demote-Unsupported-input-format-log.patch
-875788a4571ec8485f17b0abf9681238acdf3c92a1152363d4416d68e171eb7a9231dd51b59b9f56e2815f6e81bbb33fbde5419e3b9b15e1963800ebe6eddb14  0006-debayer_egl-Use-untransposed-matrix-to-fix-GLES-2.0.patch
-ac4e3c742fde4f8e4775bd2afbaaecb18fa49b869eb4309032bae985680f97443353eb384de19a9b588b632bb1711f82c318e0431214afe09068910b2e901252  0007-simple-Limit-swISP-output-sizes.patch
-2b8ee82c974a0a54279700c70dc8973038f5e1b517cade87872319d5f0b5aa9be6df0a827a9098da3fb498238b1fe080419e9950e34def0edadca0247794f269  0008-libcamera-Add-quad-Bayer-CFA-layout-support.patch
-4c44f6fb51c5a482b36897b181774d0e2a6b15ba6971cca9ba299db564d8722989e4687b22ba175d1a3b8b3a1a312d423c730958acff7a751c29213d857c0321  0009-libcamera-simple-expose-manual-focus-when-the-sensor.patch
-0457fe86662b1d20a85efe45d1747cad6f2bb0f1199173593b25f10a31cbb3fdf478372a6370ee46fab4d94525093bca7e2817d636bc7761cd271f76f74ffb78  0010-libcamera-soft-contrast-detection-autofocus.patch
+d929b5a417afdde72f38e9644b4803ff9d7affc5ba106987996779bba1b31163816410d16e545e9cd03b29ed841742735b2be47d50d4052c0aa4f0c9877c889d  0009-libcamera-simple-conducir-la-lente-y-el-autoenfoque.patch
+8436570ae4b2be6935c0ab67182c59330dc2dea3b87260bcf25971eb6c5f0b063d94d8011716c011229d0d4f0b307a3fac29044126089ce08aeab50d4dde68da  0010-libcamera-softisp-contraste-para-el-autoenfoque.patch
 a542360955198f101209fb2ed2ee797bc7afa59e147e58f1be49b315cc89ddb1124527d7f0507c580379e5d58cca7ed9fdbc00379f22f02425584db2f1a371b3  0011-libcamera-camera_lens-Power-the-lens-only-while-the-c.patch
-44fab8a61184f5a74eae08134a75b6ff6d7493193da19cee239ec1ebca52506bfd3e43383c601444034150225e6634e525288cd47cea183e6d80f2923ddcaa8a  0012-libcamera-software_isp-Prefer-udmabuf-for-the-output-buffers.patch
-0dec2a6c8a62fc7c02bd411cdd213c9de3dea6df9d33448cb311e807b130e0c90c4d8507beffa49e7f0d20e85c0fbd6e35bdeb727ce0d20dbb5cba338575456b  0013-libcamera-software_isp-debayer_egl-Destroy-the-EGL-context-on-stop.patch
-22167a4eceb6d1b40b0b7c45fdf116c71684f5340de7f767535cb8e160ad9d2ae0f00cb3d461f73a344520a48a4641cf46226841d78bee06bfbfd2a91337f754  qcam.desktop
+4d5724a370f766e47b9f99642f8c907ac4618a9bbe89da6f04a554a578f75677f1cb4b2dd10b3ed910da004b91b73f9c5d5c5f409b5f34b9ce7197a7b3acd8fd  0012-libcamera-usar-udmabuf-antes-que-la-cma.patch
+e5349772fc7b87e734a69ca6f6f52ac903b6cc8a7aa22461dfb3f8c2b7d189e46c89ead495b8f07568f9ba4bec4c736aa9e4d45e97a636e2eda639f2f5837090  0013-libcamera-py-crear-el-dir-antes-de-los-enlaces.patch
+e9a66ee248c2ef978cc6412ac3db5d5056fbe9add470a7edf6c3c33b7bc9ccdddc3e3fb30734bf19d4ae911ddb809b54984e12251d34b362bb288fbda6116453  0014-libcamera-helpers-de-sensor-s5kjn1-e-imx766.patch
 2ee566653b17d565d2c0de67cbe6ebad25df5aac6051cad78e6bae52016fa2ca0247e964d735ac776b3e0bd447ead9c4fcb26cd7629228cdba3ceb91b46f378f  hi846.yaml
 4942edd551dcf51630246f71e600c17760d3574d5d45e5530d6cfeefe2c9ab1a812fbe220f8e89d92e19a499c592b2507c801ca4eb74cd15fcecb60bff5c650b  imx355.yaml
 285c6d0d712df341c0117c3762ddc139f53f44e6be36c3388d1a62696429175e2916f392163131e21f410c3676f02f5d125f375171f45f8d82ad278aa5076c62  imx363.yaml

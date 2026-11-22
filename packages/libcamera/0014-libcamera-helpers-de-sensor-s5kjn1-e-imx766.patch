@@ -1,0 +1,43 @@
+Helpers de sensor para la s5kjn1 y la imx766 (spacewar).
+
+Sin ellos el AGC no traduce la ganancia: la IMX766 se quedaba con analogue_gain = 0 y las
+imágenes salían negras (medido el 2026-11-22). Los modelos salen de los drivers del kernel
+(S5KJN1_AGAIN_SHIFT = 5; IMX766 0..15360 con 24 dB).
+--- a/src/ipa/libipa/camera_sensor_helper.cpp
++++ b/src/ipa/libipa/camera_sensor_helper.cpp
+@@ -656,6 +656,35 @@
+ };
+ REGISTER_CAMERA_SENSOR_HELPER("imx471", CameraSensorHelperImx471)
+ 
++/*
++ * ⚠️ spacewar (2026-11-22): sin estos dos, el AGC no sabe traducir ganancia y deja
++ * los controles inservibles (la IMX766 se quedaba con analogue_gain = 0 y la imagen salía
++ * negra). Los modelos salen de los propios drivers del kernel:
++ *
++ *  - S5KJN1: el driver escribe el control con S5KJN1_AGAIN_SHIFT = 5, o sea ganancia = código/32
++ *    (1..64 -> 0,03x..2x), que es el modelo lineal de abajo.
++ *  - IMX766: el control va de 0 a 15360 con un máximo de 24 dB, o sea 1/640 dB por código.
++ */
++class CameraSensorHelperS5kjn1 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperS5kjn1()
++	{
++		gain_ = AnalogueGainLinear{ 1, 0, 0, 32 };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("s5kjn1", CameraSensorHelperS5kjn1)
++
++class CameraSensorHelperImx766 : public CameraSensorHelper
++{
++public:
++	CameraSensorHelperImx766()
++	{
++		gain_ = AnalogueGainExp{ 1.0, expGainDb(1.0 / 640.0) };
++	}
++};
++REGISTER_CAMERA_SENSOR_HELPER("imx766", CameraSensorHelperImx766)
++
+ class CameraSensorHelperImx477 : public CameraSensorHelper
+ {
+ public:

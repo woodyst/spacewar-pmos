@@ -1,0 +1,662 @@
+Autoenfoque por contraste en el IPA simple (spacewar).
+
+Añade al IPA por software la figura de mérito del enfoque (suma de diferencias de luminancia entre
+muestras vecinas), un algoritmo de escalada que mueve la lente y publica LensPosition para las apps, y
+el camino para que la posición salga por la lista de controles del sensor hasta el actuador.
+
+Portado a 0.8 (2026-11-22): el IPA pasó de src/ipa/simple a src/ipa/softisp y el namespace es
+ipa::softisp; SWSTATS_START_LINE_STATS ya no es SWSTATS_DECLARE_LINE_STATS.
+--- a/include/libcamera/internal/software_isp/software_isp.h
++++ b/include/libcamera/internal/software_isp/software_isp.h
+@@ -44,10 +44,12 @@
+ 
+ LOG_DECLARE_CATEGORY(SoftwareIsp)
+ 
++class CameraLens;
++
+ class SoftwareIsp : public Object
+ {
+ public:
+-	SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
++	SoftwareIsp(PipelineHandler *pipe, CameraSensor *sensor,
+ 		    ControlInfoMap *ipaControls);
+ 	~SoftwareIsp();
+ 
+@@ -89,9 +91,29 @@
+ 	Signal<uint32_t, const ControlList &> metadataReady;
+ 	Signal<const ControlList &> setSensorControls;
+ 
++	/**
++	 * \brief Sensor controls as handed to the IPA, lens included
++	 */
++	const ControlInfoMap &sensorControls() const { return ipaSensorControls_; }
++
++	/** \brief Focus lens to drive, when the pipeline handler found one */
++	void setFocusLens(CameraLens *lens) { focusLens_ = lens; }
++
+ private:
++	/*
++	 * Sensor controls handed to the IPA, with the focus lens' controls
++	 * merged in. Both the map and its id map are kept here: a ControlInfoMap
++	 * only borrows a pointer to its id map, so the merged one has to outlive
++	 * it.
++	 */
++	CameraLens *focusLens_ = nullptr;
++	CameraSensor *sensor_;
++	ControlIdMap ipaSensorIdMap_;
++	ControlInfoMap ipaSensorControls_;
++
+ 	void saveIspParams(uint32_t frame);
+ 	void setSensorCtrls(const ControlList &sensorControls);
++	void buildIpaSensorControls();
+ 	void statsReady(uint32_t frame, uint32_t bufferId);
+ 	void inputReady(FrameBuffer *input);
+ 	void outputReady(FrameBuffer *output);
+--- a/include/libcamera/internal/software_isp/swisp_stats.h
++++ b/include/libcamera/internal/software_isp/swisp_stats.h
+@@ -56,6 +56,16 @@
+ 	 * \brief A histogram of luminance values of all the sampled pixels
+ 	 */
+ 	Histogram yHistogram;
++	/**
++	 * \brief Focus figure of merit: sum of the absolute luminance
++	 *        difference between horizontally neighbouring samples
++	 *
++	 * Defocus blurs away high spatial frequencies, so this sum peaks when
++	 * the lens is in focus. It scales with scene contrast and exposure as
++	 * well, and is therefore only meaningful when comparing frames of the
++	 * same scene taken with the same exposure.
++	 */
++	uint64_t sharpness;
+ };
+ 
+ } /* namespace libcamera */
+--- /dev/null
++++ b/src/ipa/softisp/algorithms/af.cpp
+@@ -0,0 +1,221 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Contrast-detection autofocus
++ *
++ * The software ISP has no focus algorithm, so a camera with a working focus
++ * actuator still takes blurred pictures unless the application drives the lens
++ * itself - and none of them do.
++ *
++ * Contrast detection can measure how good the current lens position is, but
++ * never which way the focus lies, so this climbs: it takes a step, compares the
++ * figure of merit with the previous position, keeps going while the picture
++ * improves, and on the first step that makes it worse turns around and halves
++ * the step. That visits far fewer positions than sweeping the range, and ends
++ * up finer, since the last steps are only a few codes wide.
++ */
++
++#include "af.h"
++
++#include <algorithm>
++
++#include <libcamera/base/log.h>
++
++namespace libcamera {
++
++namespace ipa::softisp::algorithms {
++
++LOG_DEFINE_CATEGORY(IPASoftAf)
++
++/*
++ * Manual focus is offered to applications whenever the lens is there: the
++ * position is a fraction of the actuator range, and the autofocus algorithm
++ * keeps working on top of it.
++ */
++int Af::init(IPAContext &context, [[maybe_unused]] const ValueNode &tuningData)
++{
++	context.ctrlMap[&controls::LensPosition] =
++		ControlInfo(0.0f, 1.0f, 0.0f);
++
++	return 0;
++}
++
++int Af::configure(IPAContext &context,
++		  [[maybe_unused]] const IPAConfigInfo &configInfo)
++{
++	auto &af = context.activeState.af;
++
++	af.available = false;
++	af.pending = false;
++	state_ = State::Idle;
++
++	const auto &controls = context.configuration.af.controls;
++	if (!controls.has_value()) {
++		LOG(IPASoftAf, Debug) << "No focus lens, autofocus disabled";
++		return 0;
++	}
++
++	min_ = controls->first;
++	max_ = controls->second;
++	if (max_ <= min_) {
++		LOG(IPASoftAf, Warning) << "Focus lens has an empty range";
++		return 0;
++	}
++
++	af.available = true;
++	af.min = min_;
++	af.max = max_;
++
++	/* Start from the middle: the climb can go either way from there. */
++	bestPosition_ = min_ + (max_ - min_) / 2;
++
++	LOG(IPASoftAf, Debug)
++		<< "Autofocus over " << min_ << "-" << max_;
++
++	startClimb(context);
++
++	return 0;
++}
++
++void Af::moveTo(IPAContext &context, int32_t position)
++{
++	auto &af = context.activeState.af;
++
++	position_ = std::clamp(position, min_, max_);
++	af.position = position_;
++	af.pending = true;
++	settle_ = 0;
++}
++
++void Af::startClimb(IPAContext &context)
++{
++	state_ = State::Climbing;
++	step_ = std::max<int32_t>((max_ - min_) / kInitialStepDivisor, kMinStep);
++	direction_ = 1;
++	havePrev_ = false;
++	prevFom_ = 0.0;
++	bestFom_ = 0.0;
++	measurements_ = 0;
++
++	moveTo(context, bestPosition_);
++}
++
++void Af::process(IPAContext &context,
++		 [[maybe_unused]] const uint32_t frame,
++		 [[maybe_unused]] IPAFrameContext &frameContext,
++		 const SwIspStats *stats,
++		 [[maybe_unused]] ControlList &metadata)
++{
++	auto &af = context.activeState.af;
++
++	LOG(IPASoftAf, Debug)
++		<< "process: available " << af.available << " state " << static_cast<int>(state_)
++		<< " sharpness " << stats->sharpness
++		<< " sum " << stats->sum_.r() << "/" << stats->sum_.g() << "/" << stats->sum_.b();
++
++	if (!af.available || state_ == State::Idle)
++		return;
++
++	/*
++	 * Normalise by the frame's total luminance: the raw sum grows with
++	 * brightness, and the AGC keeps working while we focus, so an
++	 * unnormalised figure would rank a brighter frame above a sharper one.
++	 */
++	const uint64_t luminance = stats->sum_.r() + stats->sum_.g() + stats->sum_.b();
++	const double fom = luminance ? static_cast<double>(stats->sharpness) / luminance
++				     : 0.0;
++
++	if (state_ == State::Settled) {
++		if (cooldown_) {
++			cooldown_--;
++			return;
++		}
++
++		if (fom < settledFom_ * kRetriggerRatio)
++			lowCount_++;
++		else
++			lowCount_ = 0;
++
++		if (lowCount_ < kRetriggerFrames)
++			return;
++
++		LOG(IPASoftAf, Debug)
++			<< "Picture went soft (" << fom << " against "
++			<< settledFom_ << "), focusing again";
++
++		startClimb(context);
++		return;
++	}
++
++	/*
++	 * Give the lens time to travel and the pipeline time to deliver a frame
++	 * taken at the new position, or the comparison is against the wrong one.
++	 */
++	if (settle_ < kSettleFrames) {
++		settle_++;
++		return;
++	}
++
++	LOG(IPASoftAf, Debug)
++		<< "At " << position_ << ": fom " << fom
++		<< " (step " << step_ << ", dir " << direction_ << ")";
++
++	if (fom > bestFom_) {
++		bestFom_ = fom;
++		bestPosition_ = position_;
++	}
++
++	if (++measurements_ >= kMaxMeasurements) {
++		LOG(IPASoftAf, Warning)
++			<< "Autofocus gave up after " << measurements_
++			<< " measurements";
++		step_ = 0;
++	} else if (!havePrev_) {
++		/* First reading: nothing to compare against yet, just step. */
++		havePrev_ = true;
++	} else if (fom < prevFom_) {
++		/*
++		 * That step made things worse, so the peak is behind us: turn
++		 * around and look more closely.
++		 */
++		direction_ = -direction_;
++		step_ /= 2;
++	}
++
++	prevFom_ = fom;
++
++	if (step_ >= kMinStep) {
++		int32_t next = position_ + direction_ * step_;
++
++		/*
++		 * At the end of the lens' travel there is nowhere further to
++		 * go, so turn around and refine instead of pushing against it.
++		 */
++		if (next < min_ || next > max_) {
++			direction_ = -direction_;
++			step_ /= 2;
++			next = position_ + direction_ * step_;
++		}
++
++		if (step_ >= kMinStep) {
++			moveTo(context, next);
++			return;
++		}
++	}
++
++	moveTo(context, bestPosition_);
++	settledFom_ = bestFom_;
++	state_ = State::Settled;
++	cooldown_ = kCooldownFrames;
++	lowCount_ = 0;
++
++	LOG(IPASoftAf, Info)
++		<< "Autofocus settled at " << bestPosition_
++		<< " (fom " << bestFom_ << ") after " << measurements_
++		<< " measurements";
++}
++
++REGISTER_IPA_ALGORITHM(Af, "Af")
++
++} /* namespace ipa::softisp::algorithms */
++
++} /* namespace libcamera */
+--- /dev/null
++++ b/src/ipa/softisp/algorithms/af.h
+@@ -0,0 +1,82 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++/*
++ * Contrast-detection autofocus
++ */
++
++#pragma once
++
++#include "algorithm.h"
++
++namespace libcamera {
++
++namespace ipa::softisp::algorithms {
++
++class Af : public Algorithm
++{
++public:
++	Af() = default;
++	~Af() = default;
++
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void process(IPAContext &context, const uint32_t frame,
++		     IPAFrameContext &frameContext,
++		     const SwIspStats *stats,
++		     ControlList &metadata) override;
++
++private:
++	/*
++	 * The climb starts with a step of this fraction of the lens range and
++	 * halves it on every reversal, so the search both covers ground quickly
++	 * and ends up finer than any fixed-size sweep could afford.
++	 */
++	static constexpr unsigned int kInitialStepDivisor = 8;
++	/* Stop once the step is this small: below it the lens does not move */
++	static constexpr int32_t kMinStep = 4;
++	/*
++	 * Frames to let pass after moving the lens before its statistics are
++	 * trusted: the move takes time, and the figure of merit that arrives
++	 * right after belongs to a frame that was already in flight.
++	 */
++	static constexpr unsigned int kSettleFrames = 3;
++	/*
++	 * Focus is only chased again once the picture has been clearly and
++	 * persistently worse than what the last climb achieved. Reacting to
++	 * small or brief drops would make the lens hunt on every wobble.
++	 */
++	static constexpr double kRetriggerRatio = 0.7;
++	static constexpr unsigned int kRetriggerFrames = 5;
++	/* Statistics to ignore after settling, so a climb cannot chain */
++	static constexpr unsigned int kCooldownFrames = 20;
++	/* Give up rather than climb forever on a noisy or featureless scene */
++	static constexpr unsigned int kMaxMeasurements = 40;
++
++	void startClimb(IPAContext &context);
++	void moveTo(IPAContext &context, int32_t position);
++
++	enum class State {
++		Idle,
++		Climbing,
++		Settled,
++	};
++
++	State state_ = State::Idle;
++	unsigned int settle_ = 0;
++	unsigned int measurements_ = 0;
++	unsigned int lowCount_ = 0;
++	unsigned int cooldown_ = 0;
++	int32_t min_ = 0;
++	int32_t max_ = 0;
++	int32_t step_ = 0;
++	int32_t direction_ = 1;
++	int32_t position_ = 0;
++	double prevFom_ = 0.0;
++	bool havePrev_ = false;
++	double bestFom_ = 0.0;
++	double settledFom_ = 0.0;
++	int32_t bestPosition_ = 0;
++};
++
++} /* namespace ipa::softisp::algorithms */
++
++} /* namespace libcamera */
+--- a/src/ipa/softisp/algorithms/meson.build
++++ b/src/ipa/softisp/algorithms/meson.build
+@@ -2,6 +2,7 @@
+ 
+ softisp_ipa_algorithms = files([
+     'adjust.cpp',
++    'af.cpp',
+     'awb.cpp',
+     'agc.cpp',
+     'blc.cpp',
+--- a/src/ipa/softisp/data/uncalibrated.yaml
++++ b/src/ipa/softisp/data/uncalibrated.yaml
+@@ -16,4 +16,5 @@
+   #                0, 0, 1]
+   - Adjust:
+   - Agc:
++  - Af:
+ ...
+--- a/src/ipa/softisp/ipa_context.h
++++ b/src/ipa/softisp/ipa_context.h
+@@ -10,6 +10,7 @@
+ #include <array>
+ #include <memory>
+ #include <optional>
++#include <utility>
+ #include <stdint.h>
+ 
+ #include <libcamera/controls.h>
+@@ -35,9 +36,24 @@
+ 	struct {
+ 		std::optional<uint8_t> level;
+ 	} black;
++	struct {
++		/* Range of the focus actuator, when the camera has one */
++		std::optional<std::pair<int32_t, int32_t>> controls;
++	} af;
+ };
+ 
+ struct IPAActiveState {
++	struct {
++		/* Whether the camera has a focus lens we may drive */
++		bool available;
++		/* Range of the lens actuator, in its own units */
++		int32_t min;
++		int32_t max;
++		/* Position to apply, and whether it still needs applying */
++		int32_t position;
++		bool pending;
++	} af;
++
+ 	ipa::awb::ActiveState awb;
+ 	ipa::ccm::ActiveState ccm;
+ 	ipa::agc::ActiveState agc;
+--- a/src/ipa/softisp/softisp.cpp
++++ b/src/ipa/softisp/softisp.cpp
+@@ -193,11 +193,28 @@
+ {
+ 	context_.sensorControls = configInfo.sensorControls;
+ 
++
+ 	/* Clear the IPA context before the streaming session. */
+ 	context_.configuration = {};
+ 	context_.activeState = {};
+ 	context_.frameContexts.clear();
+ 
++	/*
++	 * ⚠️ 2026-11-22: esto va DESPUÉS de limpiar el contexto y ANTES de configurar los
++	 * algoritmos. Antes se hacía justo después de leer los controles del sensor, y el
++	 * `context_.configuration = {}` de aquí arriba borraba el rango del actuador: el
++	 * algoritmo de autoenfoque se quedaba sin lente («No focus lens»).
++	 */
++	const auto focusInfo = configInfo.sensorControls.find(V4L2_CID_FOCUS_ABSOLUTE);
++	if (focusInfo != configInfo.sensorControls.end()) {
++		context_.configuration.af.controls =
++			std::make_pair(focusInfo->second.min().get<int32_t>(),
++				       focusInfo->second.max().get<int32_t>());
++		LOG(IPASoftIsp, Debug)
++			<< "focus range " << focusInfo->second.min().get<int32_t>() << "-"
++			<< focusInfo->second.max().get<int32_t>();
++	}
++
+ 	for (const auto &algo : algorithms()) {
+ 		int ret = algo->configure(context_, configInfo);
+ 		if (ret)
+@@ -248,6 +265,9 @@
+ 	std::tie(frameContext.sensor.exposure, frameContext.sensor.gain) =
+ 		agc::extractControls(sensorControls, context_.camHelper.get());
+ 
++	LOG(IPASoftIsp, Debug)
++		<< "processStats frame " << frame << ", " << algorithms().size() << " algoritmos";
++
+ 	ControlList metadata(controls::controls);
+ 	for (const auto &algo : algorithms())
+ 		algo->process(context_, frame, frameContext, stats_, metadata);
+@@ -256,6 +276,17 @@
+ 	ControlList ctrls(context_.sensorControls);
+ 	agc::prepareControls(ctrls, context_.camHelper.get(),
+ 			     frameContext.agc.exposure, frameContext.agc.gain);
++
++	/*
++	 * The lens rides along on the sensor control list; the pipeline handler
++	 * peels it off and sends it to the lens subdevice.
++	 */
++	auto &af = context_.activeState.af;
++	if (af.available && af.pending) {
++		ctrls.set(V4L2_CID_FOCUS_ABSOLUTE, af.position);
++		af.pending = false;
++	}
++
+ 	setSensorControls.emit(ctrls);
+ }
+ 
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -24,6 +24,8 @@
+ #include <libcamera/stream.h>
+ 
+ #include "libcamera/internal/bayer_format.h"
++#include "libcamera/internal/camera_lens.h"
++#include "libcamera/internal/camera_sensor.h"
+ #include "libcamera/internal/framebuffer.h"
+ #include "libcamera/internal/software_isp/debayer_params.h"
+ 
+@@ -78,9 +80,10 @@
+  * \param[in] sensor Pointer to the CameraSensor instance owned by the pipeline handler
+  * \param[out] ipaControls The IPA controls to update
+  */
+-SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, const CameraSensor *sensor,
++SoftwareIsp::SoftwareIsp(PipelineHandler *pipe, CameraSensor *sensor,
+ 			 ControlInfoMap *ipaControls)
+ 	: ispWorkerThread_("SWIspWorker"),
++	  sensor_(sensor),
+ 	  dmaHeap_(DmaBufAllocator::DmaBufAllocatorFlag::CmaHeap |
+ 		   DmaBufAllocator::DmaBufAllocatorFlag::SystemHeap |
+ 		   DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf)
+@@ -157,11 +160,13 @@
+ 		return;
+ 	}
+ 
++	buildIpaSensorControls();
++
+ 	ret = ipa_->init(IPASettings{ ipaTuningFile, sensor->model() },
+ 			 debayer_->getStatsFD(),
+ 			 sharedParams_.fd(),
+ 			 sensorInfo,
+-			 sensor->controls(),
++			 ipaSensorControls_,
+ 			 ipaControls,
+ 			 &ccmEnabled_,
+ 			 &lscEnabled_);
+@@ -283,6 +288,40 @@
+  * \param[out] ipaControls The IPA controls to update
+  * \return 0 on success, a negative errno on failure
+  */
++/*
++ * Build the control map handed to the IPA: the sensor's with the focus lens'
++ * merged in. It is rebuilt on configure() because the lens is only known to
++ * the pipeline handler by then, and without it the autofocus algorithm cannot
++ * see the actuator.
++ */
++void SoftwareIsp::buildIpaSensorControls()
++{
++	ControlInfoMap::Map merged(sensor_->controls().begin(),
++				   sensor_->controls().end());
++	ipaSensorIdMap_ = sensor_->controls().idmap();
++
++	CameraLens *lens = focusLens_ ? focusLens_ : sensor_->focusLens();
++	if (lens) {
++		for (const auto &[id, info] : lens->controls())
++			merged[id] = info;
++		/*
++		 * The id map has to grow too: ControlInfoMap asserts that every
++		 * control it holds is described there.
++		 */
++		for (const auto &[num, id] : lens->controls().idmap())
++			ipaSensorIdMap_[num] = id;
++	}
++
++	ipaSensorControls_ = ControlInfoMap(std::move(merged), ipaSensorIdMap_);
++
++	LOG(SoftwareIsp, Debug)
++		<< "IPA sensor controls: " << ipaSensorControls_.size()
++		<< " (lens " << (lens ? lens->controls().size() : 0) << ", "
++		<< (ipaSensorControls_.find(V4L2_CID_FOCUS_ABSOLUTE) != ipaSensorControls_.end()
++			    ? "with focus" : "NO focus")
++		<< ")";
++}
++
+ int SoftwareIsp::configure(const StreamConfiguration &inputCfg,
+ 			   const std::vector<std::reference_wrapper<const StreamConfiguration>> &outputCfgs,
+ 			   const ipa::softisp::IPAConfigInfo &configInfo,
+@@ -290,7 +329,17 @@
+ {
+ 	ASSERT(ipa_ && debayer_);
+ 
+-	int ret = ipa_->configure(configInfo, ipaControls);
++	/*
++	 * Hand the IPA the control map built above, the one that carries the
++	 * focus lens: the one coming from the pipeline handler only has the
++	 * sensor's, and without the lens the autofocus cannot see the actuator.
++	 */
++	buildIpaSensorControls();
++
++	ipa::softisp::IPAConfigInfo ipaConfigInfo = configInfo;
++	ipaConfigInfo.sensorControls = ipaSensorControls_;
++
++	int ret = ipa_->configure(ipaConfigInfo, ipaControls);
+ 	if (ret < 0)
+ 		return ret;
+ 
+--- a/src/libcamera/software_isp/swstats_cpu.cpp
++++ b/src/libcamera/software_isp/swstats_cpu.cpp
+@@ -186,6 +186,9 @@
+ 	uint64_t sumR = 0;                \
+ 	uint64_t sumG = 0;                \
+ 	uint64_t sumB = 0;                \
++	uint64_t sharpness = 0;           \
++	uint64_t prevY = 0;               \
++	bool havePrevY = false;           \
+ 	uint64_t nSamples = 0;
+ 
+ #define SWSTATS_ACCUMULATE_LINE_STATS(div)      \
+@@ -201,12 +204,18 @@
+ 	yVal = r * kRedYMul;                    \
+ 	yVal += g * kGreenYMul;                 \
+ 	yVal += b * kBlueYMul;                  \
+-	stats.yHistogram[yVal * SwIspStats::kYHistogramSize / (256 * 256 * (div))]++;
++	stats.yHistogram[yVal * SwIspStats::kYHistogramSize / (256 * 256 * (div))]++; \
++						\
++	if (havePrevY)                  \
++		sharpness += yVal > prevY ? yVal - prevY : prevY - yVal; \
++	prevY = yVal;                   \
++	havePrevY = true;
+ 
+ #define SWSTATS_FINISH_LINE_STATS() \
+ 	stats.sum_.r() += sumR;     \
+ 	stats.sum_.g() += sumG;     \
+ 	stats.sum_.b() += sumB;     \
++	stats.sharpness += sharpness;     \
+ 	stats.numPixels_ += nSamples;
+ 
+ void SwStatsCpu::statsBGGR8Line0(const uint8_t *src[], SwIspStats &stats)
+@@ -408,6 +417,7 @@
+ 		s.sum_ = RGB<uint64_t>({ 0, 0, 0 });
+ 		s.numPixels_ = 0;
+ 		s.yHistogram.fill(0);
++		s.sharpness = 0;
+ 	}
+ }
+ 
+@@ -425,10 +435,18 @@
+ 	if (valid) {
+ 		sharedStats_->sum_ = RGB<uint64_t>({ 0, 0, 0 });
+ 		sharedStats_->numPixels_ = 0;
++		/*
++		 * ⚠️ spacewar (2026-11-22): la nitidez también. Cada hilo acumula en su propio
++		 * SwIspStats y aquí solo se fusionaban sum_, numPixels_ y el histograma, así que
++		 * la figura de mérito del autoenfoque se calculaba y se tiraba: el algoritmo veía
++		 * sharpness = 0 con cualquier imagen.
++		 */
++		sharedStats_->sharpness = 0;
+ 		sharedStats_->yHistogram.fill(0);
+ 		for (const auto &s : stats_) {
+ 			sharedStats_->sum_ += s.sum_;
+ 			sharedStats_->numPixels_ += s.numPixels_;
++			sharedStats_->sharpness += s.sharpness;
+ 			for (unsigned int j = 0; j < SwIspStats::kYHistogramSize; j++)
+ 				sharedStats_->yHistogram[j] += s.yHistogram[j];
+ 		}
+@@ -437,6 +455,10 @@
+ 	}
+ 
+ 	sharedStats_->valid = valid;
++	LOG(SwStatsCpu, Debug)
++		<< "frame " << frame << ": sharpness " << sharedStats_->sharpness
++		<< " sum " << sharedStats_->sum_.r();
++
+ 	statsReady.emit(frame, bufferId);
+ }
+ 

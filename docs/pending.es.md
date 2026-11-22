@@ -106,3 +106,19 @@ Dos fallos encadenados, los dos corregidos y probados con una llamada real (2026
    SCO de calentamiento no subía y el intento se daba por gastado; la llamada llegaba con el WCN6750 fuera del
    SLIMbus y el calentamiento solo acertaba ya sin llamada (11 s de silencio). Ahora ese fallo no cuenta como
    intento y se reintenta durante 20 s.
+
+## ✅ Autoenfoque en libcamera 0.8
+
+Funciona (`Autofocus settled at 2558 (fom 9.63) after 12 measurements`). Portado a la estructura nueva
+del IPA (`src/ipa/softisp`), con estos tropiezos documentados en los parches:
+
+- la **fusión de estadísticas** del ISP no copiaba la nitidez (se calculaba por hilo y se tiraba);
+- el rango del actuador se guardaba antes del reset del contexto del IPA;
+- la IPA recibía el mapa de controles sin la lente;
+- **`/dev/udmabuf` primero**: con 16 MB de CMA la captura no arrancaba;
+- ***sensor helpers*** de `s5kjn1` e `imx766` (sin ellos el AGC dejaba la IMX766 en ganancia 0 y todo
+  salía negro);
+- las calibraciones van en `ipa/softisp` (0.8 renombró la carpeta desde `ipa/simple`).
+
+⚠️ Con escena oscura la nitidez es 0 **y es correcto**: sin luz no hay contraste que medir.
+

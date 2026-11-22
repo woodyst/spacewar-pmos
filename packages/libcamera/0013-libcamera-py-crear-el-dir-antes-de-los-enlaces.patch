@@ -1,0 +1,14 @@
+--- a/src/py/libcamera/meson.build
++++ b/src/py/libcamera/meson.build
+@@ -89,6 +89,11 @@
+ # Create symlinks from the build dir to the source dir so that we can use the
+ # Python module directly from the build dir.
+ 
++# ⚠️ spacewar (2026-11-22): meson lanza estos «ln -fsrT» al configurar, antes de crear el
++# directorio de compilación, y «ln -r» necesita que el directorio destino exista: la configuración
++# moría con «Command `... ln -fsrT ... __init__.py' failed with status 1». Se crea aquí primero.
++run_command('mkdir', '-p', meson.current_build_dir(), check : true)
++
+ run_command('ln', '-fsrT', files('__init__.py'),
+             meson.current_build_dir() / '__init__.py',
+             check : true)

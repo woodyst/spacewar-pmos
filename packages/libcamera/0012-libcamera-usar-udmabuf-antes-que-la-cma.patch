@@ -1,0 +1,35 @@
+Usar /dev/udmabuf antes que la CMA para los búferes del ISP (spacewar).
+
+El asignador se queda con el primer proveedor que abre y no vuelve atrás si la reserva falla. En
+este móvil la CMA es de 16 MB y el ISP pide decenas de megas: la captura moría con «dma-heap
+allocation failure». Con udmabuf primero, sale de memoria del sistema.
+
+Restaurado en 0.8 el 2026-11-22 (era el 0012 de la 0.7.2).
+--- a/src/libcamera/dma_buf_allocator.cpp
++++ b/src/libcamera/dma_buf_allocator.cpp
+@@ -40,7 +40,17 @@
+ };
+ #endif
+ 
++/*
++ * ⚠️ spacewar (2026-11-22): /dev/udmabuf PRIMERO.
++ *
++ * El orden decide: se usa el primer proveedor que abra y cuyo tipo se haya pedido, y no hay
++ * vuelta atrás si luego falla la reserva. En este móvil la CMA es de 16 MB (CmaTotal 24 MB) y
++ * el ISP por software pide búferes de salida de decenas de megas: con la CMA delante, la
++ * captura moría con «dma-heap allocation failure … Can't allocate buffers». Con udmabuf los
++ * búferes salen de memoria del sistema y la cámara funciona.
++ */
+ static constexpr std::array<DmaBufAllocatorInfo, 4> providerInfos = { {
++	{ DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf, "/dev/udmabuf" },
+ 	/*
+ 	 * /dev/dma_heap/linux,cma is the CMA dma-heap. When the cma heap size is
+ 	 * specified on the kernel command line, this gets renamed to "reserved".
+@@ -48,7 +58,6 @@
+ 	{ DmaBufAllocator::DmaBufAllocatorFlag::CmaHeap, "/dev/dma_heap/linux,cma" },
+ 	{ DmaBufAllocator::DmaBufAllocatorFlag::CmaHeap, "/dev/dma_heap/reserved" },
+ 	{ DmaBufAllocator::DmaBufAllocatorFlag::SystemHeap, "/dev/dma_heap/system" },
+-	{ DmaBufAllocator::DmaBufAllocatorFlag::UDmaBuf, "/dev/udmabuf" },
+ } };
+ 
+ LOG_DEFINE_CATEGORY(DmaBufAllocator)
