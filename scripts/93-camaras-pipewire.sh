@@ -73,6 +73,26 @@ else
 	sleep 3'
 fi
 
+# ── 3b. portal de cámara (2026-11-22) ───────────────────────────────────────────────────────────────
+# Las apps (Snapshot) piden el flujo POR EL PORTAL: sin «org.freedesktop.portal.Camera» sale
+# «No se pudo reproducir el flujo de la cámara». Lo da xdg-desktop-portal (core) si tiene una
+# implementación «Access» de respaldo, y esa la aporta xdg-desktop-portal-gnome.
+# ⚠️ Y xdg-desktop-portal-wlr (que no pinta nada en phosh) mata su conexión de PipeWire y arrastra
+# al portal principal a un SIGSEGV: la app se queda colgada y no se cierra. Se deja desactivado.
+echo ">> 3b. portal de cámara"
+ssh $SSH_OPTS "$MOVIL" 'set -u
+apk info -e xdg-desktop-portal-gnome >/dev/null 2>&1 || sudo -n apk add xdg-desktop-portal-gnome
+systemctl --user stop xdg-desktop-portal-wlr 2>/dev/null || true
+systemctl --user mask xdg-desktop-portal-wlr.service 2>/dev/null || true
+systemctl --user restart xdg-desktop-portal 2>/dev/null || true
+sleep 3
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+P=$(gdbus call --session --dest org.freedesktop.portal.Desktop \
+      --object-path /org/freedesktop/portal/desktop \
+      --method org.freedesktop.DBus.Properties.Get \
+      org.freedesktop.portal.Camera IsCameraPresent 2>/dev/null | head -1)
+echo "   portal de cámara: ${P:-NO DISPONIBLE}"'
+
 echo ">> 4. comprobar"
 ssh $SSH_OPTS "$MOVIL" 'set -u
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
