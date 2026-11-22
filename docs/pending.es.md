@@ -18,9 +18,13 @@ Lo que queda abierto, y por dónde empezar.
 
 ## Cámaras
 
-- **Exposición/ganancia de la IMX766** (sin sensor helper).
-- **Calidad de imagen** de la principal: el ISP por software no tiene ajuste bueno para la IMX766.
-- Mejorar la app de cámara del sistema en vez de cambiar de app.
+- ✅ **Exposición/ganancia**: hechos los *sensor helpers* de `s5kjn1` e `imx766` (el AGC converge). Antes
+  la IMX766 se quedaba en ganancia 0 y las imágenes salían negras.
+- ✅ **Autoenfoque** por contraste y **enfoque manual** (`LensPosition`), probados en la app.
+- **Zoom digital**: el pipeline ignora `ScalerCrop`; hay que atenderlo y recortar+escalar en el ISP.
+- **Calidad de imagen** de la principal: el ISP por software no tiene ajuste fino para la IMX766; la CCM
+  de la trasera‑1 (`s5kjn1.yaml`) se puede afinar si aún se ve verdosa.
+- `AfMode` se publica pero no aparece en la lista de controles.
 
 ## LED Glyph
 
@@ -40,43 +44,6 @@ Lo que queda abierto, y por dónde empezar.
 - **Sensores**: decidir si el interruptor `spacewar-sensores.conf` sobra ya (con el parche de
   iio-sensor-proxy, phosh se recuperaría solo).
 - **Micrófonos digitales** del WCD9385 con mainline: no dan audio (los analógicos sí).
-
-## ⏳ Rebasar los parches de phosh a la 0.59
-
-El repositorio ofrece **phosh 0.59** (`99990.59.0-r1`), que sustituye a la `99990.57.0-r102` del proyecto.
-Al actualizar se pierden los dos parches de `packages/phosh/`; **por decisión del usuario se deja así de
-momento** (2026-11-22).
-
-- **`0002-despertar-automatico-no-enciende-la-pantalla.patch`** es el que importa: sin él la pantalla vuelve
-  a encenderse en cada despertar automático del firmware (~2,3 por hora, también de noche) y cada rato
-  despierto cuesta ~150 mA; el consumo pasa de ~0,47 %/h a ~3 %/h.
-- **`0001`** añade el complemento de los botones propios en los ajustes rápidos (4 ranuras); sin él
-  desaparecen.
-
-**Qué hay que hacer al retomarlo**: portar los ~20 líneas de `0002` a `src/monitor-manager.c` de 0.59 —la
-función `power_save_mode_changed_cb` sigue existiendo— interceptando `PHOSH_MONITOR_POWER_SAVE_MODE_ON` y
-convirtiéndolo en OFF cuando `/run/despertar-origen` diga `automatico` y sea reciente, consumiendo la marca;
-lo mismo con `0001`; subir `pkgrel` y recompilar. Mientras tanto, para no perderlo: `sudo apk hold phosh
-phosh-lang phosh-schemas phosh-systemd phosh-portalsconf` **y phoc** (van acoplados: phosh 0.57 con phoc
-0.59 puede no arrancar la sesión).
-
-## ⏳ Rebasar los parches de libcamera a la 0.8
-
-Tras actualizar, **Snapshot dejó de ver las cámaras**. No era el kernel (`cam -l` listaba las tres) sino que
-faltaba el plugin de cámara de PipeWire: `/usr/lib/spa-0.2/libcamera/libspa-libcamera.so` no existía y
-`pipewire-spa-libcamera` era un marcador vacío `0-r0`. Con pipewire 1.6.11 ese plugin es real pero **necesita
-`libcamera.so.0.8`**, y aquí estaba la 0.7.2 (la del proyecto).
-
-**Hecho**: se soltaron los *pins* de `libcamera*`/`py3-libcamera` en `/etc/apk/world` y se instaló
-`pipewire-spa-libcamera=1.6.11-r0`, que trajo **libcamera 99990.8.0-r1** (sin nuestros parches) y
-`cosmic-ext-camera 1.11.0`. Comprobado: 3 cámaras en `cam -l`, nodos `Video/Source` en PipeWire y
-`IsCameraPresent = true` en el portal.
-
-**Pendiente**: de los 13 parches de `packages/libcamera/`, los **0007 y 0008 ya están en upstream**; los 11
-restantes hay que portarlos a 99990.8.0 y recompilar (`scripts/94-libcamera.sh`). Los que se notan:
-**0010 (autoenfoque por contraste)**, **0009 (enfoque manual)**, **0011 (encender la lente solo mientras se
-usa, dw9719)**, **0012 (udmabuf)** y **0013 (contexto EGL al parar)**. Sin ellos la cámara funciona **sin
-autoenfoque** y con menos rendimiento.
 
 ## ✅ phosh 0.59 con nuestros dos parches
 
