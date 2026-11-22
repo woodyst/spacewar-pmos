@@ -79,7 +79,7 @@ for d in "$HERE"/packages/* "$HERE/kernel"; do
 	# PENDIENTES (2026-11-22): paquetes cuyo reemplazo por el de upstream es DELIBERADO y está anotado en
 	# el README (se perdió el parche a propósito). No cuentan como problema, pero sí se avisan.
 	case "$n" in
-		phosh) pendiente=si ;;
+		phosh|libcamera) pendiente=si ;;
 		*) pendiente=no ;;
 	esac
 	if [ -z "$i" ]; then echo "·  $n: no instalado (ignorado)"

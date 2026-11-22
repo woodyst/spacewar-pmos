@@ -59,3 +59,21 @@ convirtiéndolo en OFF cuando `/run/despertar-origen` diga `automatico` y sea re
 lo mismo con `0001`; subir `pkgrel` y recompilar. Mientras tanto, para no perderlo: `sudo apk hold phosh
 phosh-lang phosh-schemas phosh-systemd phosh-portalsconf` **y phoc** (van acoplados: phosh 0.57 con phoc
 0.59 puede no arrancar la sesión).
+
+## ⏳ Rebasar los parches de libcamera a la 0.8
+
+Tras actualizar, **Snapshot dejó de ver las cámaras**. No era el kernel (`cam -l` listaba las tres) sino que
+faltaba el plugin de cámara de PipeWire: `/usr/lib/spa-0.2/libcamera/libspa-libcamera.so` no existía y
+`pipewire-spa-libcamera` era un marcador vacío `0-r0`. Con pipewire 1.6.11 ese plugin es real pero **necesita
+`libcamera.so.0.8`**, y aquí estaba la 0.7.2 (la del proyecto).
+
+**Hecho**: se soltaron los *pins* de `libcamera*`/`py3-libcamera` en `/etc/apk/world` y se instaló
+`pipewire-spa-libcamera=1.6.11-r0`, que trajo **libcamera 99990.8.0-r1** (sin nuestros parches) y
+`cosmic-ext-camera 1.11.0`. Comprobado: 3 cámaras en `cam -l`, nodos `Video/Source` en PipeWire y
+`IsCameraPresent = true` en el portal.
+
+**Pendiente**: de los 13 parches de `packages/libcamera/`, los **0007 y 0008 ya están en upstream**; los 11
+restantes hay que portarlos a 99990.8.0 y recompilar (`scripts/94-libcamera.sh`). Los que se notan:
+**0010 (autoenfoque por contraste)**, **0009 (enfoque manual)**, **0011 (encender la lente solo mientras se
+usa, dw9719)**, **0012 (udmabuf)** y **0013 (contexto EGL al parar)**. Sin ellos la cámara funciona **sin
+autoenfoque** y con menos rendimiento.
