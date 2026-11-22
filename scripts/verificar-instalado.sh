@@ -110,6 +110,20 @@ else echo "❌ enlace UCM conf.d/sm8250/NP1.conf -> «$E» (esperado ../../Nothi
 # ⚠️ 2026-11-22: tras actualizar, `pipewire-spa-libcamera` puede quedar en el simulacro 0-r0 (si libcamera está
 # pinneada) y entonces las cámaras existen en el kernel y no en PipeWire: ni portal ni apps.
 PL=$(ssh $SSH_OPTS "$MOVIL" '[ -f /usr/lib/spa-0.2/libcamera/libspa-libcamera.so ] && apk info -v 2>/dev/null | sed -n "s/^pipewire-spa-libcamera-\\(.*\\)$/\\1/p" | head -1' || true)
+# ⚠️ 2026-11-22: las apps piden el flujo por el portal de cámara. Necesita xdg-desktop-portal-gnome (aporta
+# el «Access» que el portal de cámara exige) y que xdg-desktop-portal-wlr NO esté (se caía con SIGSEGV y
+# arrastraba al portal). Sin esto, Snapshot dice «no se puede reproducir el flujo».
+if ssh $SSH_OPTS "$MOVIL" 'apk info -e xdg-desktop-portal-gnome >/dev/null 2>&1'; then
+	echo "✅ portal de cámara: xdg-desktop-portal-gnome instalado"
+else
+	echo "❌ falta xdg-desktop-portal-gnome (portal de cámara: la app no verá cámaras) — sh scripts/93-camaras-pipewire.sh"; emal=$((emal+1)); echo scripts/93-camaras-pipewire.sh >> "$T/scripts"
+fi
+W=$(ssh $SSH_OPTS "$MOVIL" 'systemctl --user is-enabled xdg-desktop-portal-wlr 2>/dev/null' || true)
+case "${W:-}" in
+	masked) echo "✅ xdg-desktop-portal-wlr desactivado" ;;
+	*)      echo "⚠️  xdg-desktop-portal-wlr está «${W:-?}»: puede tumbar el portal (93-camaras-pipewire.sh lo desactiva)" ;;
+esac
+
 case "${PL:-}" in
 	""|0-r0) echo "❌ falta el plugin de libcamera en PipeWire (pipewire-spa-libcamera «${PL:-ninguno}»): las apps no verán cámaras (93-camaras-pipewire.sh)"; emal=$((emal+1)); echo scripts/93-camaras-pipewire.sh >> "$T/scripts" ;;
 	*)       echo "✅ plugin de libcamera en PipeWire ($PL)" ;;
