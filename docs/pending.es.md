@@ -78,18 +78,20 @@ restantes hay que portarlos a 99990.8.0 y recompilar (`scripts/94-libcamera.sh`)
 usa, dw9719)**, **0012 (udmabuf)** y **0013 (contexto EGL al parar)**. Sin ellos la cámara funciona **sin
 autoenfoque** y con menos rendimiento.
 
-## ⏳ phosh 0.59 sin nuestros dos parches
+## ✅ phosh 0.59 con nuestros dos parches
 
-Se instaló a propósito el phosh 0.59 del repositorio, que sustituye a nuestro `99990.57.0-r102`. Se pierden:
+Compilado e instalado `phosh-99990.59.0-r100`:
 
-- **0002** — no encender la pantalla en un despertar automático: **la pantalla vuelve a encenderse** en cada
-  despertar del firmware (~2,3/h, también de noche) y se pasa de ~0,47 %/h a ~3 %/h.
-- **0001** — el complemento «mandato» de los botones propios de los ajustes rápidos: **faltan los botones de
-  VPN y Waydroid** (comprobado el 2026-11-22: no queda ni el esquema `mobi.phosh.plugins.mandato`).
+- **0002** — la pantalla ya no se enciende en un despertar automático.
+- **0001** — vuelven los botones de **VPN** y **Waydroid** (complemento «mandato»).
 
-Volver a tenerlos: portar `0002` a `src/monitor-manager.c` de 0.59 (`power_save_mode_changed_cb`) y `0001` a
-la API de complementos de 0.59, subir el `pkgrel` y recompilar con `scripts/96-botones-mandato.sh`.
-`verificar-instalado.sh` lo recuerda cada vez que se pasa (sale con `⏳`, no como error).
+Al portar cambió una cosa: la lista de complementos activos está ahora en `mobi.phosh.shell.plugins
+quick-settings` (antes `sm.puri.phosh.plugins`); el script de botones prueba las dos. Y dos piezas de la receta
+0.57 ya sobran en 0.59: `splash-timeout-flatpak-dbus.patch` (ese MR ya está upstream) y el `appstream-dev`
+añadido a mano.
+
+De paso quedó resuelto el bloqueo del buildroot: `systemd 262.2` duplica ficheros entre `bin/` y `usr/bin/` y
+`apk` fallaba al instalarlo; `apk fix` deja el estado sano y el script lo hace solo con `--lax` + reintento.
 
 ## ✅ RESUELTO: la voz en 7.2.9
 

@@ -1,5 +1,14 @@
-diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.c.in phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.c.in
---- a/plugins/mandato-quick-setting/mandato-quick-setting.c.in
+Complemento «mandato» para los ajustes rápidos de phosh (spacewar).
+
+Cuatro ranuras iguales (mandato1..mandato4) que ejecutan mandatos configurables desde gsettings:
+titulo · icono · icono-apagado · encender · apagar · estado · intervalo · espera
+Ver docs/BOTONES-AJUSTES-RAPIDOS.md y scripts/96-botones-mandato.sh.
+
+Portado de phosh 0.57 a 0.59 (2026-11-22): la API del complemento no cambió
+(phosh_quick_setting_set_active/_set_status_icon/_set_status_page, phosh_status_icon_*, phosh_status_page_*);
+solo hay que añadir la ranura al array quick_setting_plugins de plugins/meson.build.
+
+--- /dev/null
 +++ b/plugins/mandato-quick-setting/mandato-quick-setting.c.in
 @@ -0,0 +1,387 @@
 +/*
@@ -389,8 +398,7 @@ diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-set
 +
 +  return g_strdupv (extension_points);
 +}
-diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in
---- a/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in
+--- /dev/null
 +++ b/plugins/mandato-quick-setting/mandato-quick-setting.plugin.in
 @@ -0,0 +1,6 @@
 +[Plugin]
@@ -399,8 +407,7 @@ diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mandato-quick-set
 +Types=quick-setting;
 +Comment=Botón que ejecuta los mandatos configurados en la ranura @N@
 +Plugin=@plugins_dir@/libphosh-plugin-@name@.so
-diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/meson.build phosh-v0.57.0/plugins/mandato-quick-setting/meson.build
---- a/plugins/mandato-quick-setting/meson.build
+--- /dev/null
 +++ b/plugins/mandato-quick-setting/meson.build
 @@ -0,0 +1,45 @@
 +# Complemento genérico de ajustes rápidos: RANURAS que ejecutan mandatos configurables (spacewar).
@@ -448,8 +455,7 @@ diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/meson.build phosh
 +    install_dir: plugins_dir,
 +  )
 +endforeach
-diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml phosh-v0.57.0/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml
---- a/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml
+--- /dev/null
 +++ b/plugins/mandato-quick-setting/mobi.phosh.plugins.mandato.gschema.xml
 @@ -0,0 +1,43 @@
 +<?xml version="1.0" encoding="UTF-8"?>
@@ -495,7 +501,6 @@ diff -ruN original/phosh-v0.57.0/plugins/mandato-quick-setting/mobi.phosh.plugin
 +    </key>
 +  </schema>
 +</schemalist>
-diff -ruN original/phosh-v0.57.0/plugins/meson.build phosh-v0.57.0/plugins/meson.build
 --- a/plugins/meson.build
 +++ b/plugins/meson.build
 @@ -69,6 +69,7 @@

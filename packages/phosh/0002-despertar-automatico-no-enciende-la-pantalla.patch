@@ -1,10 +1,19 @@
-diff -ruN original/phosh-v0.57.0/src/monitor-manager.c phosh-v0.57.0/src/monitor-manager.c
+Un despertar AUTOMÁTICO no enciende la pantalla (spacewar).
+
+El gancho de systemd-sleep escribe /run/despertar-origen al reanudar («usuario» si lo provocó un botón o
+el táctil, «automatico» si no). Aquí se corta la petición de PowerSaveMode 0 durante los primeros segundos
+tras un despertar automático, y se consume la marca para no tragarse el primer toque.
+Ver docs/PANTALLA-Y-DESPERTARES.md y scripts/99-ganchos-suspension.sh.
+
+Portado a 0.59 (2026-11-22): power_save_mode_changed_cb sigue igual; solo cambian las líneas de arriba.
+
 --- a/src/monitor-manager.c
 +++ b/src/monitor-manager.c
-@@ -24,6 +24,10 @@
+@@ -24,6 +24,11 @@
  #include "dbus/gsd-color-dbus.h"
  
  #include <gdk/gdkwayland.h>
++
 +#include <stdio.h>
 +#include <string.h>
 +#include <sys/stat.h>
@@ -12,7 +21,7 @@ diff -ruN original/phosh-v0.57.0/src/monitor-manager.c phosh-v0.57.0/src/monitor
  
  #define GSD_COLOR_BUS_NAME "org.gnome.SettingsDaemon.Color"
  #define GSD_COLOR_OBJECT_PATH "/org/gnome/SettingsDaemon/Color"
-@@ -863,6 +867,67 @@
+@@ -863,6 +868,67 @@
  }
  
  
@@ -80,17 +89,17 @@ diff -ruN original/phosh-v0.57.0/src/monitor-manager.c phosh-v0.57.0/src/monitor
  static void
  power_save_mode_changed_cb (PhoshMonitorManager *self,
                              GParamSpec          *pspec,
-@@ -884,6 +949,13 @@
+@@ -882,6 +948,13 @@
+   default:
+     ps_mode = PHOSH_MONITOR_POWER_SAVE_MODE_OFF;
      break;
-   }
- 
++  }
++
 +  /* ⚠️ spacewar: ver display_on_request_after_automatic_wake() */
 +  if (ps_mode == PHOSH_MONITOR_POWER_SAVE_MODE_ON &&
 +      display_on_request_after_automatic_wake ()) {
 +    g_debug ("spacewar: keeping the display off, this wake was automatic");
 +    ps_mode = PHOSH_MONITOR_POWER_SAVE_MODE_OFF;
-+  }
-+
-   phosh_monitor_manager_set_power_save_mode (self, ps_mode);
- }
+   }
  
+   phosh_monitor_manager_set_power_save_mode (self, ps_mode);

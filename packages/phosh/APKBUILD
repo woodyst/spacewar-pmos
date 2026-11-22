@@ -1,14 +1,18 @@
 # ⚠️ COPIA NUESTRA de la receta de pmaports (extra-repos/systemd/phosh), con DOS parches propios:
 # 0001-complemento-de-ajustes-rapidos-por-mandato.patch añade el complemento genérico «mandato», cuatro
 # ranuras de ajustes rápidos que ejecutan mandatos configurables (ver docs/BOTONES-AJUSTES-RAPIDOS.md).
-# 0002-despertar-automatico-no-enciende-la-pantalla.patch: un despertar AUTOMÁTICO del móvil (avisos del
-# módem, la batería) no enciende la pantalla; solo lo hace si lo provocó un botón o el táctil.
-# Ver docs/wakeups-and-battery.es.md.
-# ⚠️ appstream-dev lo añadimos NOSOTROS a makedepends: meson.build:129 lo exige sin condiciones y la receta de
-# pmaports no lo lista (en su entorno le llega por otra vía). Sin él la compilación muere en 15 s.
-# pkgrel=100 por convención del proyecto: así una actualización de pmaports/Alpine NO nos sustituye en silencio.
-# Al subir de versión: traer la receta nueva de pmaports y volver a poner estas tres cosas.
+# 0002-despertar-automatico-no-enciende-la-pantalla.patch: un despertar AUTOMÁTICO (avisos del módem,
+# la batería) no enciende la pantalla; solo lo hace si lo provocó un botón o el táctil. Ver docs/PANTALLA-
+# Y-DESPERTARES.md y packages/phosh/0002-*.patch.
+# pkgrel=10000 por convención del proyecto: así una actualización de pmaports/Alpine NO nos sustituye en silencio.
+# Al subir de versión: traer la receta nueva de pmaports y volver a poner estas dos cosas.
 #
+# ⚠️ 0.59 (2026-11-22): al portar desde la 0.57 se dejan de necesitar dos cosas de antes:
+#   · appstream-dev: la receta de pmaports ya lo lista (antes lo añadíamos nosotros o moría a los 15 s).
+#   · splash-timeout-flatpak-dbus.patch: el MR de upstream (dar más tiempo a las apps flatpak y a las que
+#     tienen nombre D-Bus) YA ESTÁ en 0.59 —`src/app-tracker.c` tiene check_flatpak_state() y el
+#     «owns dbus name, waited %us, giving it more time»—, así que el parche sobra (está en el historial de
+#     git por si hiciera falta).
 # Forked from Alpine to build against polkit with systemd session tracking
 # Otherwise polkit auth agent will be broken to some mismatch for elogind/systemd session tracking
 # See https://gitlab.postmarketos.org/postmarketOS/pmaports/-/work_items/4344
@@ -16,9 +20,9 @@
 # Co-Maintainer: Achill Gilgenast <achill@achill.org>
 maintainer="Stefan Hansson <newbyte@postmarketos.org>"
 pkgname=phosh
-_pkgver=0.57.0
+_pkgver=0.59.0
 pkgver=9999$_pkgver
-pkgrel=102
+pkgrel=100
 pkgdesc="Wayland shell for GNOME on mobile devices"
 # armhf: blocked by gnome-shell-schemas
 arch="all !armhf"
@@ -40,13 +44,14 @@ depends="
 	gsettings-desktop-schemas
 	phoc
 	phosh-keyboard
+	slurp
 	xwayland
 	"
 makedepends="
 	$depends
 	appstream-dev
 	callaudiod-dev
-	systemd-dev
+	dconf-dev
 	evince-dev
 	evolution-data-server-dev
 	feedbackd-dev
@@ -65,10 +70,12 @@ makedepends="
 	meson
 	modemmanager-dev
 	networkmanager-dev
+	pipewire-dev
 	polkit-dev
 	pulseaudio-dev
 	py3-docutils
 	qrcodegen-dev
+	systemd-dev
 	upower-dev
 	wayland-dev
 	wayland-protocols
@@ -89,7 +96,6 @@ subpackages="
 	$pkgname-systemd
 	"
 source="https://sources.phosh.mobi/releases/phosh/phosh-${_pkgver/_/.}.tar.xz
-	splash-timeout-flatpak-dbus.patch
 	0001-complemento-de-ajustes-rapidos-por-mandato.patch
 	0002-despertar-automatico-no-enciende-la-pantalla.patch
 	"
@@ -141,8 +147,7 @@ schemas() {
 }
 
 sha512sums="
-51219a3295b061047765368a0f65a02b131c4b229ec03713f547595b73a98c51b99086769bf0584dd7d44b8426b21d50162e76e955fb7a37a5136cefa253fea8  phosh-0.57.0.tar.xz
-cb4bad612e5d2dff156c6b97b460c16ab7fd48067935b616fe0b65d11c3d255f1ecd06b800c654ac9ea93bc53e823eb47134836dfdf61bb338588dab78d3b9e9  splash-timeout-flatpak-dbus.patch
-2377606ea31c3ee2a4bf766fed0c51cbf248b1fa03f08a11c4b8ec2fe78dcc5668161d83588e67f0b08b0ed1a145a4ca45308df6a9d97c076b5ef271175ec313  0001-complemento-de-ajustes-rapidos-por-mandato.patch
-44535411310f4228a600e9c16551a5ac35a3014feb70bac8ddd250c526ec34eef7814fab966e98c722ffc5b26631d752ba23986bc21e853dcfb4de31dda7bde1  0002-despertar-automatico-no-enciende-la-pantalla.patch
+dbbe0149092f350c7eda01c12a4729c7b36e38ae782ed79adcf30825f8a0bf06efc3b7d40ba1d50e039427fc6ef97dd6663538882cb8e3d1ae426a0e3a9aadac  phosh-0.59.0.tar.xz
+dbd7a75bef547d639d84e851a67d36b1d9746413cf059a0757e8536157a73253d696c4ddde5b17083807099744e55ddd6542dadd77af559b0ea89090419814b5  0001-complemento-de-ajustes-rapidos-por-mandato.patch
+5eb4402b0d7ea5720b473183cb503118f6cda865a8b23692d65aa46c87a783613d0fb0715a2a9c68df730c933b33b949e0c453b23bffc7b91e0e761514daecb5  0002-despertar-automatico-no-enciende-la-pantalla.patch
 "
